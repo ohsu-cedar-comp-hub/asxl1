@@ -1,0 +1,79 @@
+---
+title: "ASXL1 Mutant, 6 month pilot analysis"
+author: "Theresa Lusardi"
+date: "2019.07.14"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+
+```{r, echo=FALSE}
+data_dir = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/sixMonthRun/Integrated_Results"
+file2read = "ASXL_6mo_2019.06.21.RDS"
+res2summarize = "0.1"
+res2sum = paste('integrated_snn_res', res2summarize, sep = '.')
+```
+
+### Summarize `r file2read`
+
+### Summarize clusters at the 'r res2summarize' resolution
+```{r, echo=FALSE}
+SeuratObject <- readRDS(paste(data_dir, file2read, sep = "/"))
+```
+
+```{r, echo=FALSE}
+#table(Idents(SeuratObject), SeuratObject$gt)
+# This is an interesting table - shows the relative mapping of cells to clusters at resolutions. TMI?
+#table(Idents(SeuratObject), value = SeuratObject$integrated_snn_res.0.1, value = SeuratObject$gt)
+#colSums(table(Idents(SeuratObject), value = SeuratObject$integrated_snn_res.0.1, value = SeuratObject$gt))
+res2use = 0.5
+resName = sprintf("integrated_snn_res.%.1f", res2use)
+sum.res.cts = colSums(table(Idents(SeuratObject), value = SeuratObject$integrated_snn_res.0.5, value = SeuratObject$gt))
+cbind(sum.res.cts, pct.of.wt = sum.res.cts[,'MUT']/sum.res.cts[,'WT']*100)
+
+```
+
+2. Identify differentially expressed genes within each cluster (WT, MUT)
+```{r, echo=FALSE}
+library(data.table)
+cluster.list = list()
+Idents(object = SeuratObject) <- "integrated_snn_res.0.1"
+clusters = length(unique(SeuratObject@meta.data$integrated_snn_res.0.1))
+for (mycluster in 0:(clusters-1)) {
+  # Cluster 11 - no DE - cell number too low?? 
+  if (mycluster == 11) { next }
+  clustName = paste("snn01", mycluster, sep = "_")
+  
+  myde = as.data.table(FindMarkers(SeuratObject, ident.1 = "WT", ident.2 = "MUT", group.by = 'gt',
+                                   subset.ident = mycluster, verbose = FALSE),
+                       keep.rownames = "geneID")
+  
+  cluster.list[[clustName]] = myde
+}
+cluster_de = rbindlist(cluster.list, idcol = "Cluster")
+#VlnPlot(SeuratObject, group.by = "gt", features = rownames(temp)[1], pt.size = 0.2)
+#VlnPlot(SeuratObject, split.by = "gt", features = rownames(temp)[1], pt.size = 0.2)
+#DotPlot(SeuratObject, split.by = "gt", features = rownames(temp)[1:20]) + RotatedAxis()
+
+savefile = FALSE
+if (savefile) {
+  name2save = paste("6mo_snn01_DEbyCluster", Sys.Date(), "csv", sep = ".")
+  fwrite(cluster_de, paste(data_dir, name2save, sep = "/"))
+}
+```
+
+3. Identify cluster-defining genes.
+```{r, echo=FALSE}
+clusterBMs = FindAllMarkers(SeuratObject)
+savefile = TRUE
+if (savefile) {
+  name2save = paste("6mo_snn01_BMbyCluster", Sys.Date(), "csv", sep = ".")
+  fwrite(clusterBMs, paste(data_dir, name2save, sep = "/"))
+}
+VlnPlot(SeuratObject, features = "Hbb-bs")
+clusterBMs2 = as.data.table(clusterBMs)
+```

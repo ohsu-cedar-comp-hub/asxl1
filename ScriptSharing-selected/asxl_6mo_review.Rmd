@@ -1,0 +1,216 @@
+---
+title: "ASXL1 Mutant, 6 month pilot analysis"
+author: "Theresa Lusardi"
+date: "2019.06.14"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+
+Initial analysis of ASXL1 mutant vs Wildtype mouse bone marrow (n = 3 / group)
+Bone marrow was isolated from male littermate mice on a C57Bl6 background
+Enriched for lin- cells
+Each mouse was labeled with Biolegend hashtag anti-CD45
+
+Fastq data is archived at:  /home/groups/CEDAR/archive/seq/CEL190322TB/190426_D00735_0326_ACDLYRANXX
+New Fastq (with barcodes) archived at:
+  /home/groups/CEDAR/archive/seq/CEL190322TB_new/190426_D00735_0326_ACDLYRANXX/Unaligned
+Analysis files at: /home/groups/CEDAR/lusardi/asxl/sixmo
+
+```{r, echo=FALSE}
+# Select a data set to process (lane1, lane2, or aggr)
+dataset = "lane1"
+```
+
+### Processing dataset `r dataset`
+
+```{r init, echo=FALSE}
+# Reticulate library needed to use umap-learn
+suppressMessages(library(reticulate))
+use_condaenv(condaenv="r-reticulate", conda='/Users/lusardi/anaconda3/bin/conda')
+suppressMessages(library(dplyr))
+suppressMessages(library(Seurat))
+
+# Set up the antibody/hashtags
+# Flow Genes corresponding to antibody capture antigens
+# Note the list names correspond to the identifier used for the Ab reference, the list elements are the corresponding gene IDs from MGI.
+ab_gene = list(ab_CD117 = c("Kit"),
+               ab_CD150 = c("Slamf1"),
+               ab_CD16_32 = c("Fcgr2b", "Fcgr3", "Fcgr4"),
+               ab_CD48 = c("Cd48"),
+               ab_Sca1 = c("Ly6a", "Ly6e"),
+               ab_CD41 = c("Itga2b"),
+               ab_CD105 = c("Eng"))
+mo_gene = "Ptprc"
+wt_mice = c("mo_1584", "mo_1595", "mo_1596")
+mut_mice = c("mo_1579", "mo_1580", "mo_1581")
+na_mice = c("NA_7", "NA_8", "NA_9", "NA_10")
+
+# Load the dataset
+data_dir <- sprintf("/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/sixMonthRun/data/%s/raw_feature_bc_matrix/", dataset)
+filt_dir <- sprintf("/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/sixMonthRun/data/%s/filtered_feature_bc_matrix", dataset)
+sc.data <- Read10X(data.dir = filt_dir)
+sc.gex = sc.data$`Gene Expression`
+print(sprintf("Counts Matrix - %i genes, %i cells", dim(sc.gex)[1], dim(sc.gex)[2]))
+sc.hto = sc.data$`Antibody Capture`[c(wt_mice, mut_mice, na_mice), ]
+sc.ab = sc.data$`Antibody Capture`[names(ab_gene), ]
+print(sprintf("Antibody Matrix - %i targets, %i cells", dim(sc.ab)[1], dim(sc.ab)[2]))
+
+if (all.equal(colnames(sc.ab), colnames(sc.gex)) &
+    all.equal(colnames(sc.ab), colnames(sc.hto)) &
+    all.equal(colnames(sc.gex), colnames(sc.hto))) {
+  print("Column order consistent - antibody, hashtags, and gene expression")
+} else {
+  print("Column order inconsistent among antibody, hashtags, and gene expression - need to fix it.")
+}
+
+# Select cell barcodes detected by both RNA and HTO 
+joint.bcs <- intersect(colnames(sc.gex), colnames(sc.ab))
+print(sprintf("Number of cells in common: %i", length(joint.bcs)))
+
+# Initialize the Seurat object with the raw (non-normalized data).
+min.cells = 3
+min.features = 200
+print(sprintf("Create Seurat Object - %i minimum cells, %i minimum features", min.cells, min.features))
+sc <- CreateSeuratObject(counts = sc.gex, project = "sc", min.cells = min.cells, min.features = min.features)
+sc
+```
+
+Take a look at the expression of the genes that were used for antibody labeling
+```{r, echo=FALSE}
+# Flow Genes corresponding to antibody capture antigens
+# Note the list names correspond to the identifier used for the Ab reference, the list elements are the corresponding gene IDs from MGI.
+ab_gene = list(ab_CD117 = c("Kit"),
+               ab_CD150 = c("Slamf1"),
+               ab_CD16_32 = c("Fcgr2b", "Fcgr3", "Fcgr4"),
+               ab_CD48 = c("Cd48"),
+               ab_Sca1 = c("Ly6a", "Ly6e"),
+               ab_CD41 = c("Itga2b"),
+               ab_CD105 = c("Eng"))
+mo_gene = "Ptprc"
+genelist = c(mo_gene, unlist(ab_gene))
+sc.gex[genelist, 1:25]
+sc.ab[, 1:25]
+sc.hto[,1:25]
+```
+
+####Calculate QC metrics
+```{r qc, fig.height=7, fig.width=13, echo=FALSE}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+sc[["percent.mt"]] <- PercentageFeatureSet(object = sc, pattern = "^mt-")
+
+# Show QC metrics for the first 5 cells
+#head(x = sc@meta.data, 10)
+
+#Visualize QC metrics as a violin plot
+VlnPlot(object = sc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(object = sc, feature1 = "nCount_RNA", feature2 = "percent.mt") 
+plot2 <- FeatureScatter(object = sc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") 
+CombinePlots(plots = list(plot1,plot2))
+
+# Plot density function of percent.mt
+# Consider how much to include/exclude
+colors = c('#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000')
+colors = colors[length(colors):1]
+colors = c('#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#ffff33','#a65628','#f781bf','#999999')
+probs = c(0.95, 0.9, 0.85, 0.80)
+cut_opts = quantile(sc@meta.data$percent.mt, probs = probs)
+p1 <- plot(density(sc@meta.data$percent.mt), main = sprintf("Distribution of %% Mitochondrial Cells %s", dataset))
+for (i in 1:length(cut_opts)) {
+  p1 <- abline(v = cut_opts[i], col = colors[i])
+}
+legend_text = paste(probs, round(cut_opts, 1), sep = " - ")
+p1 <- legend(x = "topright", legend = legend_text, col = colors[1:length(probs)], pch = 16)
+
+```
+
+```{r, echo=FALSE}
+# Set the mitochondrial filtering cutoff
+mt_thr = 10
+```
+
+Based on plot values subset the data to filter out outlier cells - cut at `r mt_thr`%
+```{r, echo=FALSE}
+sc.sub <- subset(x = sc, subset = nFeature_RNA > 100 & nFeature_RNA < 4000 & percent.mt < mt_thr)
+print(sprintf("Before filtering out cells with >%d%% mitochondrial RNA:  %i genes, %i cells", mt_thr, dim(sc)[1], dim(sc)[2]))
+print(sprintf("After filtering out cells with >%d%% mitochondrial RNA:  %i genes, %i cells", mt_thr, dim(sc.sub)[1], dim(sc.sub)[2]))
+```
+
+### Normalize the data
+Default Seurat normalization scheme.
+
+```{r normalize, echo=FALSE}
+sc.norm <- NormalizeData(object = sc.sub, normalization.method = "LogNormalize", scale.factor = 1e4)
+```
+### Identify highly variable features (feature selection)
+#### Compare ID methods
+Note that the three methods give rather different results, with fewer than half of the candidates overlapping. However, specifying a selection.method in the VariableFeatures function does not return the top most variable for all.
+Spoke with AC - he has shifted to sctransform - consider this option...
+```{r var_features, fig.height=5, fig.width=11, echo=FALSE}
+methods2try = c("vst", "mvp", "disp")
+
+features = list()
+for (mymethod in methods2try) {
+  # Find the variants
+  sc.norm <- FindVariableFeatures(object = sc.norm, selection.method = mymethod, nfeatures = 2000)
+  
+  # Identify the 10 most highly variable genes for labeling
+  top10 <- head(x = VariableFeatures(object = sc.norm), 10)
+  top10 <- head(x = VariableFeatures(object = sc.norm, selection.method = mymethod), 10)
+  features[[mymethod]] = VariableFeatures(object = sc.norm, selection.method = mymethod)
+  
+  # plot variable features with and without labels
+  plot1 <- VariableFeaturePlot(object = sc.norm, selection.method = mymethod)
+  plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE, xnudge = 0, ynudge=0)
+  print(CombinePlots(plots = list(plot1, plot2)))
+}
+
+```
+
+***
+
+```{r, echo=FALSE}
+sc.sct = SCTransform(sc, vars.to.regress = "percent.mt", verbose = FALSE)
+```
+
+```{r, echo=FALSE}
+sc.sct <- RunPCA(sc.sct, verbose = FALSE)
+sc.sct <- RunUMAP(sc.sct, dims = 1:30, verbose = FALSE)
+
+sc.sct <- FindNeighbors(sc.sct, dims = 1:30, verbose = FALSE)
+sc.sct <- FindClusters(sc.sct, verbose = FALSE)
+DimPlot(sc.sct, label = TRUE) + NoLegend()
+```
+
+```{r, fig.height=10, fig.width=11, echo=FALSE}
+genelist = c(mo_gene, unlist(ab_gene))
+genelist = c("Ly6a", "Ly6e", "Ly6g")
+genelist = c("Hba-a1", "Igha", "Alox15", "Gata2", "Pf4", "Mpl", "Cd33", "Mmp9")
+VlnPlot(sc.sct, features = genelist, pt.size = 0.2, ncol = 2)
+```
+
+```{r, fig.height=10, fig.width=11, echo=FALSE}
+genelist = c(mo_gene, unlist(ab_gene))
+genelist = c("Ly6a", "Ly6e", "Ly6g")
+genelist = c("Hba-a1", "Igha", "Alox15", "Gata2", "Pf4", "Mpl", "Cd33", "Mmp9")
+genelist = c("Cd8a", "Gzmk", "Ccl5", "S100a4", "Anxa1", "Ccr7", "Isg15", "Cd3d")
+FeaturePlot(sc.sct, features = genelist, pt.size = 0.2, ncol = 3)
+```
+
+
+
+
+***
+<br><br>
+
+#### Session Information
+```{r, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,266 @@
+---
+title: "ASXL1 Mutant, 6 month pilot analysis"
+author: "Theresa Lusardi"
+date: "2019.06.19"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+
+ASXL1 mutant vs Wildtype mouse bone marrow, 6 month time point (n = 3 / group)
+Bone marrow was isolated from male littermate mice on a C57Bl6 background
+Enriched for lin- cells
+Each mouse was labeled with Biolegend hashtag anti-CD45
+
+Fastq data is archived at:  /home/groups/CEDAR/archive/seq/CEL190322TB/190426_D00735_0326_ACDLYRANXX
+New Fastq (with barcodes) archived at:
+  /home/groups/CEDAR/archive/seq/CEL190322TB_new/190426_D00735_0326_ACDLYRANXX/Unaligned
+Analysis files at: /home/groups/CEDAR/lusardi/asxl/sixmo
+
+```{r, echo=FALSE}
+library(Seurat)
+library(cowplot)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+
+# Set up the antibody/hashtags
+# Flow Genes corresponding to antibody capture antigens
+# Note the list names correspond to the identifier used for the Ab reference, the list elements are the corresponding gene IDs from MGI.
+ab_gene = list(ab_CD117 = c("Kit"),
+               ab_CD150 = c("Slamf1"),
+               ab_CD16_32 = c("Fcgr2b", "Fcgr3", "Fcgr4"),
+               ab_CD48 = c("Cd48"),
+               ab_Sca1 = c("Ly6a", "Ly6e"),
+               ab_CD41 = c("Itga2b"),
+               ab_CD105 = c("Eng"))
+mo_gene = "Ptprc"
+genelist = c(mo_gene, unlist(ab_gene))
+wt_mice = c("mo_1584", "mo_1595", "mo_1596")
+mut_mice = c("mo_1579", "mo_1580", "mo_1581")
+na_mice = c("NA_7", "NA_8", "NA_9", "NA_10")
+
+# Load the datasets
+wtlane = "lane2"
+mutlane = "lane1"
+wt_dir <- sprintf("/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/sixMonthRun/data/%s/filtered_feature_bc_matrix", wtlane)
+mut_dir <- sprintf("/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/sixMonthRun/data/%s/filtered_feature_bc_matrix", mutlane)
+wt.data <- Read10X(data.dir = wt_dir)
+mut.data <- Read10X(data.dir = mut_dir)
+```
+
+#### Load Wildtype Data
+```{r, fig.height=7, fig.width=13, echo=FALSE}
+print("******************************")
+wt.gex = wt.data$`Gene Expression`
+wt.hto = wt.data$`Antibody Capture`[c(wt_mice, mut_mice, na_mice), ]
+wt.ab = wt.data$`Antibody Capture`[names(ab_gene), ]
+print(sprintf("Wildtype Counts Matrix - %i genes, %i cells", dim(wt.gex)[1], dim(wt.gex)[2]))
+print(sprintf("Wildtype Hashtag Matrix - %i genes, %i cells", dim(wt.hto)[1], dim(wt.hto)[2]))
+print(sprintf("Wildtype Antibody Matrix - %i genes, %i cells", dim(wt.ab)[1], dim(wt.ab)[2]))
+if (all.equal(colnames(wt.ab), colnames(wt.gex)) &
+    all.equal(colnames(wt.ab), colnames(wt.hto)) &
+    all.equal(colnames(wt.gex), colnames(wt.hto))) {
+  print("Column order consistent - antibody, hashtags, and gene expression")
+} else {
+  print("Column order inconsistent among antibody, hashtags, and gene expression - need to fix it.")
+}
+# Select cell barcodes detected by both RNA and HTO 
+wt.joint.bcs <- intersect(colnames(wt.gex), colnames(wt.ab))
+print(sprintf("Number of cells in common: %i", length(wt.joint.bcs)))
+
+# Initialize the Seurat object with the raw (non-normalized data).
+min.cells = 3
+min.features = 200
+print(sprintf("Create Seurat Object - %i minimum cells, %i minimum features", min.cells, min.features))
+wt <- CreateSeuratObject(counts = wt.gex, project = "6mo_WT", min.cells = min.cells, min.features = min.features)
+wt$gt <- "WT"
+wt
+
+wt.gex[genelist, 1:25]
+wt.ab[, 1:25]
+wt.hto[,1:25]
+```
+
+#### Run QC for wildtype mice
+```{r, fig.height=7, fig.width=13, echo=FALSE}
+# Calculate % mitochondria in each cell
+wt[["percent.mt"]] <- PercentageFeatureSet(object = wt, pattern = "^mt-")
+
+#Visualize QC metrics as a violin plot
+VlnPlot(object = wt, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(object = wt, feature1 = "nCount_RNA", feature2 = "percent.mt") 
+plot2 <- FeatureScatter(object = wt, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") 
+CombinePlots(plots = list(plot1,plot2))
+
+# Plot density function of percent.mt
+# Consider how much to include/exclude
+colors = c('#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000')
+colors = colors[length(colors):1]
+colors = c('#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#ffff33','#a65628','#f781bf','#999999')
+probs = c(0.99, 0.95, 0.9, 0.85, 0.80)
+cut_opts = quantile(wt@meta.data$percent.mt, probs = probs)
+p1 <- plot(density(wt@meta.data$percent.mt), main = sprintf("Distribution of %% Mitochondrial Cells %s", "Wildtype"))
+for (i in 1:length(cut_opts)) {
+  p1 <- abline(v = cut_opts[i], col = colors[i])
+}
+legend_text = paste(probs, round(cut_opts, 1), sep = " - ")
+p1 <- legend(x = "topright", legend = legend_text, col = colors[1:length(probs)], pch = 16)
+mt_thr = 12
+```
+
+#### Normalize & Find Variable Features for Wildtype
+Note: Compare this to new sctransform method
+Based on plot values subset the data to filter out outlier cells - cut at `r mt_thr`%
+```{r, echo=FALSE}
+print(sprintf("Before filtering out cells with >%d%% mitochondrial RNA:  %i genes, %i cells", mt_thr, dim(wt)[1], dim(wt)[2]))
+wt <- subset(x = wt, subset = nFeature_RNA > 100 & nFeature_RNA < 4000 & percent.mt < mt_thr)
+print(sprintf("After filtering out cells with >%d%% mitochondrial RNA:  %i genes, %i cells", mt_thr, dim(wt)[1], dim(wt)[2]))
+wt <- NormalizeData(wt, verbose = FALSE)
+wt <- FindVariableFeatures(wt, selection.method = "vst", nfeatures = 2000)
+
+if (TRUE) {
+  filename = "ASXL_6mo_wt_2019.06.21.RDS"
+  filedir = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/sixMonthRun/Integrated_Results"
+  saveRDS(object = wt, file = paste(filedir, filename, sep = "/"))
+}
+```
+
+#### Load Wildtype Data
+```{r, fig.height=7, fig.width=13, echo=FALSE}
+print("******************************")
+mut.gex = mut.data$`Gene Expression`
+mut.hto = mut.data$`Antibody Capture`[c(wt_mice, mut_mice, na_mice), ]
+mut.ab = mut.data$`Antibody Capture`[names(ab_gene), ]
+print(sprintf("ASXL1 Mutant Counts Matrix - %i genes, %i cells", dim(mut.gex)[1], dim(mut.gex)[2]))
+print(sprintf("ASXL1 Mutant Hashtag Matrix - %i genes, %i cells", dim(mut.hto)[1], dim(mut.hto)[2]))
+print(sprintf("ASXL1 Mutant Antibody Matrix - %i genes, %i cells", dim(mut.ab)[1], dim(mut.ab)[2]))
+if (all.equal(colnames(mut.ab), colnames(mut.gex)) &
+    all.equal(colnames(mut.ab), colnames(mut.hto)) &
+    all.equal(colnames(mut.gex), colnames(mut.hto))) {
+  print("Column order consistent - antibody, hashtags, and gene expression")
+} else {
+  print("Column order inconsistent among antibody, hashtags, and gene expression - need to fix it.")
+}
+# Select cell barcodes detected by both RNA and HTO 
+mut.joint.bcs <- intersect(colnames(mut.gex), colnames(mut.ab))
+print(sprintf("Number of cells in common: %i", length(mut.joint.bcs)))
+
+# Initialize the Seurat object with the raw (non-normalized data).
+min.cells = 3
+min.features = 200
+print(sprintf("Create Seurat Object - %i minimum cells, %i minimum features", min.cells, min.features))
+mut <- CreateSeuratObject(counts = mut.gex, project = "6mo_MUT", min.cells = min.cells, min.features = min.features)
+mut$gt <- "MUT"
+mut
+
+mut.gex[genelist, 1:25]
+mut.ab[, 1:25]
+mut.hto[,1:25]
+```
+
+#### Run QC for Mutant mice
+```{r, fig.height=7, fig.width=13, echo=FALSE}
+# Calculate % mitochondria in each cell
+mut[["percent.mt"]] <- PercentageFeatureSet(object = mut, pattern = "^mt-")
+
+#Visualize QC metrics as a violin plot
+VlnPlot(object = mut, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(object = mut, feature1 = "nCount_RNA", feature2 = "percent.mt") 
+plot2 <- FeatureScatter(object = mut, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") 
+CombinePlots(plots = list(plot1,plot2))
+
+# Plot density function of percent.mt
+# Consider how much to include/exclude
+colors = c('#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000')
+colors = colors[length(colors):1]
+colors = c('#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#ffff33','#a65628','#f781bf','#999999')
+probs = c(0.99, 0.95, 0.9, 0.85, 0.80)
+cut_opts = quantile(mut@meta.data$percent.mt, probs = probs)
+p1 <- plot(density(mut@meta.data$percent.mt), main = sprintf("Distribution of %% Mitochondrial Cells %s", "Wildtype"))
+for (i in 1:length(cut_opts)) {
+  p1 <- abline(v = cut_opts[i], col = colors[i])
+}
+legend_text = paste(probs, round(cut_opts, 1), sep = " - ")
+p1 <- legend(x = "topright", legend = legend_text, col = colors[1:length(probs)], pch = 16)
+mt_thr = 12
+```
+
+#### Normalize & Find Variable Features for Wildtype
+Note: Compare this to new sctransform method
+Based on plot values subset the data to filter out outlier cells - cut at `r mt_thr`%
+```{r, echo=FALSE}
+print(sprintf("Before filtering out cells with >%d%% mitochondrial RNA:  %i genes, %i cells", mt_thr, dim(mut)[1], dim(mut)[2]))
+mut <- subset(x = mut, subset = nFeature_RNA > 100 & nFeature_RNA < 4000 & percent.mt < mt_thr)
+print(sprintf("After filtering out cells with >%d%% mitochondrial RNA:  %i genes, %i cells", mt_thr, dim(mut)[1], dim(mut)[2]))
+mut <- NormalizeData(mut, verbose = FALSE)
+mut <- FindVariableFeatures(mut, selection.method = "vst", nfeatures = 2000)
+```
+
+#### Find Anchors and Integrate WT and MUT data
+```{r, echo=FALSE}
+anchors_6mo <- FindIntegrationAnchors(object.list = list(wt, mut), dims = 1:20)
+combined_6mo <- IntegrateData(anchorset = anchors_6mo, dims = 1:20)
+```
+
+#### Integrated Analysis
+```{r, echo=FALSE}
+DefaultAssay(combined_6mo) <- "integrated"
+
+combined_6mo <- ScaleData(combined_6mo, verbose = FALSE)
+combined_6mo <- RunPCA(combined_6mo, npcs = 30, verbose = FALSE)
+
+combined_6mo <- RunUMAP(combined_6mo, reduction = "pca", dims = 1:20)
+combined_6mo <- FindNeighbors(combined_6mo, reduction = "pca", dims = 1:20)
+resolutions = c(0.1, 0.5, 1.2)
+for (myres in resolutions) {
+  combined_6mo <- FindClusters(combined_6mo, resolution = myres)
+}
+if (TRUE) {
+  filename = "ASXL_6mo_2019.06.21.RDS"
+  filedir = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/sixMonthRun/Integrated_Results"
+  saveRDS(object = combined_6mo, file = paste(filedir, filename, sep = "/"))
+}
+```
+
+```{r, fig.height=7, fig.width=13, echo=FALSE}
+#### Visualize Integrated Data
+p1 <- DimPlot(combined_6mo, reduction = "umap", group.by = "gt")
+p2 <- DimPlot(combined_6mo, reduction = "umap", label = TRUE)
+plot_grid(p1, p2)
+DimPlot(combined_6mo, reduction = "umap", split.by = "gt", label = TRUE)
+```
+
+#### Plot Established Markers
+Candidate groups from Ted Braun and https://github.com/theislab/graph_abstraction/blob/master/nestorowa16/nestorowa16.ipynb
+```{r, fig.height=10, fig.width=13, echo=FALSE}
+DefaultAssay(combined_6mo) <- "RNA"
+allFeatures = rownames(combined_6mo@assays$RNA)
+myfeatures = allFeatures[grep("Hbb", allFeatures)]
+featureList = list(erythroid = c(allFeatures[grep("Hbb", allFeatures)], allFeatures[grep("Hba", allFeatures)], "Gata1", "Gypa"),
+                   megakaryocytes = c("Itga2b", "Pbx1", "Vwf"),  # Sdpr not in our dataset
+                   basophils = c("Prss34", "Ms4a2", "Fcer1a", "Siglecf"),
+                   MEP = c("Pf4", "Mpl"),
+                   myeloid = c("Cd33", "Mmp9"),
+                   mast = c("Alox15", "Gata2"), 
+                   bCells = c("Igha"),
+                   neutrophil = c("Gfi1", "Elane", "Ctsg", "Mpo"),
+                   monocyte = c("Irf8", "Csf1r", "Ctsg", "Mpo"), 
+                   lsk = c("Ly6a", "Kit", "Irf8", "Flt3")
+)
+for (myfeatures in names(featureList)) {
+#  plot(FeaturePlot(combined_6mo, features = featureList[[myfeatures]], min.cutoff = "q9"))
+  p1 = FeaturePlot(combined_6mo, features = featureList[[myfeatures]], min.cutoff = "q5", split.by = "gt")
+  grid.arrange(p1, top = myfeatures)
+}
+```
