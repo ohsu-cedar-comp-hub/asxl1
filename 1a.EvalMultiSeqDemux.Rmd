@@ -1,0 +1,366 @@
+---
+title: "Evaluate MultiSeqDemux"
+author: "TLusardi"
+date: "9/16/2019"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+
+1. Read in all HTO and ADT data
+2. Demultiplex HTOs
+  * n-plets are bad!
+3. Identify surface antibodies (ADTs)
+  * n-plets are OK!
+
+```{r setup_libs, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(data.table)
+library(knitr)
+library(inflection)
+```
+
+***
+```{r setup_vars, include=FALSE}
+# Read in HTO and ADT data
+ReadNew = FALSE
+
+directory = list(raw = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/raw",
+                 rda = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/rda")
+  
+if (ReadNew) {  
+  runs2process = c("wk36_mpssr_wt", "wk36_mpssr_mut", "wk36_novo_mut", "wk36_novo_wt",
+                   "wk12_mpssr_wt", "wk12_mpssr_mut",
+                   "wk04_mpssr_wt", "wk04_mpssr_mut")
+
+  obj_ls = list()
+  for (myrun in runs2process) {
+    # read the data file
+    myinput.data = Read10X(data.dir = sprintf("%s/%s/filtered_feature_bc_matrix", directory$raw, myrun))
+  
+    # Antibody / hashtag matrix - read ADT and HTO separately
+    myabs = rownames(myinput.data$`Antibody Capture`)
+    myhto.abs = c(myabs[grep('wk', myabs)], myabs[grep('NA', myabs)])
+    myadt.abs = myabs[grep('ab', myabs)]
+
+    myhto = myinput.data$`Antibody Capture`[myhto.abs,]
+    myadt = myinput.data$`Antibody Capture`[myadt.abs,]
+  
+    # Set thresholds for cell, feature inclusion; leave at 0 for now
+    min.cells = 0
+    min.features = 0
+
+    # Initialize the Seurat object with the raw (non-normalized data).
+    seuratObj <- CreateSeuratObject(counts = myhto, assay = "HTO", project = myrun, min.cells = min.cells, min.features = min.features)
+    seuratObj[["ADT"]] <- CreateAssayObject(counts = myadt)
+
+    # Get timepoint (tp), sequencing (seq), and genotype (gt) from the run name
+    mypheno = unlist(strsplit(myrun, split = "_", fixed = TRUE))
+
+    seuratObj$tp <- mypheno[1]
+    seuratObj$seq <- mypheno[2]
+    seuratObj$gt <- mypheno[3]
+
+    seuratObj
+    obj_ls[[myrun]] <- seuratObj
+  }
+  
+  file2save = sprintf("%s/hto_adt_objectlist_%s.rds", directory$rda, Sys.Date())
+  saveRDS(obj_ls, file2save)
+} else {
+  # Read an existing file
+  date2read = "2019-09-17"
+  file2read = sprintf("%s/hto_adt_objectlist_%s.rds", directory$rda, date2read)
+  obj_ls = readRDS(file2read)
+}
+```
+  
+### Normalize counts data
+```{r normalize, fig.width=3, fig.height=3, echo=FALSE} 
+# Set plot colors
+cols <- c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a')
+
+for (mytype in c("HTO", "ADT")[1]) {
+  runs2process = c("wk04_mpssr_wt", "wk04_mpssr_mut", 
+                   "wk12_mpssr_wt", "wk12_mpssr_mut",
+                   "wk36_mpssr_wt", "wk36_mpssr_mut", "wk36_novo_wt", "wk36_novo_mut")
+  
+  for (myrun in runs2process[1]) {
+    myobj = obj_ls[[myrun]]
+    mydata = myobj@assays[[mytype]]@counts
+    maxCounts = max(mydata)
+    
+    # Plot the counts distribution for each antibody
+    names(cols) = rownames(mydata)
+    
+    # Create an empty plot window
+    plot(x = "", y = "", xlim = c(0, ncol(mydata)), ylim = c(0, log2(maxCounts)),
+         main = sprintf("%s - %s (%i cells)", mytype, myrun, ncol(mydata)), 
+         xlab = "(low) - RANK - (high)", ylab = "log2(Counts)")
+    abline(h = seq(1, log2(maxCounts), 1), col = "lightgrey")
+    abline(v = seq(2000, 14000, 2000), col = "lightgrey")
+    legend(x = "topleft", legend = rownames(mydata), col = cols[rownames(mydata)], pch = 16)
+    
+    # Add the count distributions for each antibody
+    for (myab in rownames(mydata)) {
+      myabdat = mydata[myab,]
+      myabdat = myabdat[order(myabdat)]
+      points(x = seq(1,length(myabdat), 1), 
+             y = log2(myabdat[order(myabdat)]),
+             pch = 16, cex = 0.5, col = cols[myab])
+    } 
+    
+    # Normalize the counts data & replot
+    mydata <- NormalizeData(mydata, assay = "ADT", normalization.method = "CLR")
+    maxCounts = max(mydata)
+    
+    # Create an empty plot window
+    plot(x = "", y = "", xlim = c(0, ncol(mydata)), ylim = c(0, maxCounts),
+         main = sprintf("%s - %s (%i cells)", mytype, myrun, ncol(mydata)), 
+         xlab = "(low) - RANK - (high)", ylab = "Normalized Counts")
+    abline(h = seq(1, maxCounts, 1), col = "lightgrey")
+    abline(v = seq(2000, 14000, 2000), col = "lightgrey")
+    legend(x = "topleft", legend = rownames(mydata), col = cols[rownames(mydata)], pch = 16)
+    
+    # Add the count distributions for each antibody
+    for (myab in rownames(mydata)) {
+      myabdat = mydata[myab,]
+      myabdat = myabdat[order(myabdat)]
+      points(x = seq(1,length(myabdat), 1), 
+             y = myabdat[order(myabdat)],
+             pch = 16, cex = 0.5, col = cols[myab])
+    } 
+
+    # Scale Normalized Counts & replot
+    mydata <- ScaleData(mydata, assay = "ADT")
+    maxCounts = max(mydata)
+    
+    # Create an empty plot window
+    plot(x = "", y = "", xlim = c(0, ncol(mydata)), ylim = c(min(mydata), maxCounts),
+         main = sprintf("%s - %s (%i cells)", mytype, myrun, ncol(mydata)), 
+         xlab = "(low) - RANK - (high)", ylab = "Scaled Normalized Counts")
+    abline(h = seq(1, maxCounts, 1), col = "lightgrey")
+    abline(v = seq(2000, 14000, 2000), col = "lightgrey")
+    legend(x = "topleft", legend = rownames(mydata), col = cols[rownames(mydata)], pch = 16)
+    
+    # Add the count distributions for each antibody
+    for (myab in rownames(mydata)) {
+      myabdat = mydata[myab,]
+      myabdat = myabdat[order(myabdat)]
+      points(x = seq(1,length(myabdat), 1), 
+             y = myabdat[order(myabdat)],
+             pch = 16, cex = 0.5, col = cols[myab])
+    } 
+  }
+}
+```
+
+### Conclusions:   
+
+* For HTO analysis, eliminate non-used barcodes from the analysis - they are do not meet the normalization scheme assumptions.  
+* It may be worth noting that the same HTO barcode ("blue") is typically on the overrepresented side when it's not in use. Oddly, the unused ADT antibody (ITGA2B) is never spuriously detected.   
+* For the ADT analysis, continue with defaults  
+
+***
+
+### Summarize the expression range for counts data
+Note that this section has inflection point calculator, which is why it is kept for reference (but not run currently).
+
+```{r expression, echo=FALSE} 
+quants_ls = list()
+for (mytype in c("HTO", "ADT")[0]) {
+  runs2process = c("wk04_mpssr_wt", "wk04_mpssr_mut", 
+                   "wk12_mpssr_wt", "wk12_mpssr_mut",
+                   "wk36_mpssr_wt", "wk36_mpssr_mut", "wk36_novo_wt", "wk36_novo_mut")
+  noAbline = c("")
+  for (myrun in runs2process) {
+    myobj = obj_ls[[myrun]]
+    mydata = myobj@assays$HTO@counts
+    mydata = myobj@assays[[mytype]]@counts
+    maxCounts = max(mydata)
+  
+    # Plot the counts distribution for each antibody
+    # Make a blank plot
+    
+    cols <- rev(RColorBrewer::brewer.pal(10, "Spectral"))
+    cols <- c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a')
+    names(cols) = rownames(mydata)
+    
+    # Create an empty plot window
+    plot(x = "", y = "", xlim = c(0, ncol(mydata)), ylim = c(0, log2(maxCounts)),
+         main = sprintf("HTO - %s (%i cells)", myrun, ncol(mydata)), 
+         xlab = "(low) - RANK - (high)", ylab = "log2(Counts)")
+    abline(h = seq(1, log2(maxCounts), 1), col = "lightgrey")
+    abline(v = seq(2000, 14000, 2000), col = "lightgrey")
+    legend(x = "topleft", legend = rownames(mydata), col = cols[rownames(mydata)], pch = 16)
+    
+    # Add the count distributions for each antibody
+    for (myab in rownames(mydata)) {
+      plotabline = TRUE
+      myabdat = mydata[myab,]
+      myabdat = myabdat[order(myabdat)]
+      points(x = seq(1,length(myabdat), 1), 
+             y = log2(myabdat[order(myabdat)]),
+             pch = 16, cex = 0.5, col = cols[myab])
+      
+      # Consider reasons to exclude Abline
+      # Check for explicit exclusion
+      if (myrun %chin% noAbline) {
+        print(sprintf("%s: explicitly excluded from inflection point assessment (%s)", myrun, mytype))
+        plotabline = FALSE
+        myipy = 0
+      }
+      # Determine whether there are sufficient points to determine an inflection point (algorithm requires at least 4 points)
+      ip_thresh = 4
+      if (sum(myabdat > 0) <= ip_thresh & plotabline) {
+        print(sprintf("%s (%s) - %s: too few cells with counts in inflection point assessment (minimum of %i required)", myrun, mytype, myab, ip_thresh))
+        plotabline = FALSE
+        myipy = 0
+      } 
+      if (plotabline) {
+        # Define a range to look for the inflection point
+        min = 7500
+        max = 12500
+        
+        # Adjust range to account for low threshold data
+        min = max(7500, min(which(myabdat > 0)))
+        max = ifelse(min == 7500, 12500, min(15000, length(myabdat)))
+        
+        # Define the data to search for inflection point 
+        myipy = myabdat[min:max]
+        
+        # Check for minimum delta in inflection point data
+        delta_thresh = 2
+        if (max(myipy) - min(myipy) <= delta_thresh) {
+        print(sprintf("%s (%s) - %s: Excluded - not enough difference in counts to determine inflection point - minimum of %i required)",
+                      myrun, mytype, myab, delta_thresh))
+          plotabline = FALSE
+        }
+      }
+      
+      # Check for sufficient data to 
+      if (plotabline & (sum(myipy > 1) <= ip_thresh)) {
+        print(sprintf("%s (%s) - %s - Second Check - too few cells with counts in inflection point assessment (minimum of %i required",
+                      myrun, mytype, myab, ip_thresh))
+        plotabline = FALSE
+      }
+      
+      # Plot the inflection point
+      if (plotabline) {
+        myipy = log2(myabdat[order(myabdat)][min:max])
+        myipx = 1:length(myipy)
+        myips = findiplist(myipx, myipy,0)
+        infpt = mean(myips[,3], na.rm = TRUE) + min
+        print(sprintf("%s (%s) - %s - Calculated inflection point %.1f (range %i - %i)", myrun, mytype, myab, infpt, min, max))
+        abline(v = infpt, col = cols[myab])
+        text(x = infpt, y = 12 - which(rownames(mydata) == myab), infpt, col = cols[myab], offset = 0)
+      } 
+    }
+  }
+}
+  
+```
+
+```{r inflectionPoint, echo=FALSE} 
+quants_ls = list()
+for (mytype in c("HTO", "ADT")[0]) {
+  runs2process = c("wk04_mpssr_wt", "wk04_mpssr_mut", 
+                   "wk12_mpssr_wt", "wk12_mpssr_mut",
+                   "wk36_mpssr_wt", "wk36_mpssr_mut", "wk36_novo_wt", "wk36_novo_mut")
+  noAbline = runs2process
+  for (myrun in runs2process) {
+    myobj = obj_ls[[myrun]]
+    mydata = myobj@assays$HTO@counts
+    mydata = myobj@assays[[mytype]]@counts
+    maxCounts = max(mydata)
+  
+    # Plot the counts distribution for each antibody
+    # Make a blank plot
+    cols <- rev(RColorBrewer::brewer.pal(10, "Spectral"))
+    cols <- c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a')
+    names(cols) = rownames(mydata)
+    
+    # Create an empty plot window
+    plot(x = "", y = "", xlim = c(0, ncol(mydata)), ylim = c(0, log2(maxCounts)),
+         main = sprintf("HTO - %s (%i cells)", myrun, ncol(mydata)), 
+         xlab = "(low) - RANK - (high)", ylab = "log2(Counts)")
+    abline(h = seq(1, log2(maxCounts), 1), col = "lightgrey")
+    abline(v = seq(2000, 14000, 2000), col = "lightgrey")
+    legend(x = "topleft", legend = rownames(mydata), col = cols[rownames(mydata)], pch = 16)
+    
+    # Add the count distributions for each antibody
+    for (myab in rownames(mydata)) {
+      plotabline = TRUE
+      myabdat = mydata[myab,]
+      myabdat = myabdat[order(myabdat)]
+      points(x = seq(1,length(myabdat), 1), 
+             y = log2(myabdat[order(myabdat)]),
+             pch = 16, cex = 0.5, col = cols[myab])
+      
+      # Consider reasons to exclude Abline
+      # Check for explicit exclusion
+      if (myrun %chin% noAbline) {
+#        print(sprintf("%s: explicitly excluded from inflection point assessment (%s)", myrun, mytype))
+        plotabline = FALSE
+        myipy = 0
+      }
+      # Determine whether there are sufficient points to determine an inflection point (algorithm requires at least 4 points)
+      ip_thresh = 4
+      if (sum(myabdat > 0) <= ip_thresh & plotabline) {
+        print(sprintf("%s (%s) - %s: too few cells with counts in inflection point assessment (minimum of %i required)", myrun, mytype, myab, ip_thresh))
+        plotabline = FALSE
+        myipy = 0
+      } 
+      if (plotabline) {
+        # Define a range to look for the inflection point
+        min = 7500
+        max = 12500
+        
+        # Adjust range to account for low threshold data
+        min = max(7500, min(which(myabdat > 0)))
+        max = ifelse(min == 7500, 12500, min(15000, length(myabdat)))
+        
+        # Define the data to search for inflection point 
+        myipy = myabdat[min:max]
+        
+        # Check for minimum delta in inflection point data
+        delta_thresh = 2
+        if (max(myipy) - min(myipy) <= delta_thresh) {
+        print(sprintf("%s (%s) - %s: Excluded - not enough difference in counts to determine inflection point - minimum of %i required)",
+                      myrun, mytype, myab, delta_thresh))
+          plotabline = FALSE
+        }
+      }
+      
+      # Check for sufficient data to 
+      if (plotabline & (sum(myipy > 1) <= ip_thresh)) {
+        print(sprintf("%s (%s) - %s - Second Check - too few cells with counts in inflection point assessment (minimum of %i required",
+                      myrun, mytype, myab, ip_thresh))
+        plotabline = FALSE
+      }
+      
+      # Plot the inflection point
+      if (plotabline) {
+        myipy = log2(myabdat[order(myabdat)][min:max])
+        myipx = 1:length(myipy)
+        myips = findiplist(myipx, myipy,0)
+        infpt = mean(myips[,3], na.rm = TRUE) + min
+        print(sprintf("%s (%s) - %s - Calculated inflection point %.1f (range %i - %i)", myrun, mytype, myab, infpt, min, max))
+        abline(v = infpt, col = cols[myab])
+        text(x = infpt, y = 12 - which(rownames(mydata) == myab), infpt, col = cols[myab], offset = 0)
+      } 
+    }
+  }
+}
+  
+```
+***
+#### Session Information
+```{r, echo=FALSE}
+sessionInfo()
+```

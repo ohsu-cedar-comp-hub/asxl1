@@ -1,0 +1,364 @@
+---
+title: "Create Seurat Object"
+author: "TLusardi"
+date: "8/23/2019"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+params:
+  run2process: "wk36_mpssr_wt"
+  baseDir: "/home/groups/CEDAR/braun"
+  file2save: "default"
+  calcADT: TRUE
+  local: FALSE
+---
+
+1. Read output from Cell Ranger
+2. Demultiplex HTOs
+  + n-plets are bad!
+3. Identify surface antibodies (ADTs)
+  + n-plets are OK!
+4. Save object to .rds
+
+```{r setup_libs, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(data.table)
+library(knitr)
+library(inflection)
+
+run2process = params$run2process
+```
+
+***
+
+## Create Seurat Object - `r run2process`
+
+```{r setup_vars, include=FALSE}
+# params$local = TRUE is for debugging locally... Default to FALSE - use directories on Exacloud
+if (params$local) {
+  directory = list(raw = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/raw",
+                   rda = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/rda")
+} else {
+  directory = list(raw = sprintf("%s/cellranger/%s/outs", params$baseDir, run2process),
+                   rds = sprintf("%s/seurat_obj/basicObj_%s", params$baseDir, Sys.Date()))
+}
+
+# If raw exists, continue, otherwise, exit.
+if (!dir.exists(directory$raw)) {
+  message(sprintf("ERROR: source directory does not exist %s", directory$raw))
+  knitr::knit_exit()
+}
+
+# If rda does not exist, create it
+if (!dir.exists(directory$rds)) {
+  dir.create(directory$rds)
+  if (!dir.exists(directory$rds)) {
+    message(sprintf("ERROR: could not create directory %s", directory$rds))
+    knitr::knit_exit()
+  }
+}
+```
+Source Data Directory:  `r directory$raw`   
+Processed Data Directory:  `r directory$rda`   
+Processed Run:  `r run2process`   
+
+```{r, load_10X, echo=FALSE}
+input.data = Read10X(data.dir = sprintf("%s/%s/filtered_feature_bc_matrix", directory$raw, run2process))
+
+# Get timepoint (tp), sequencing (seq), and genotype (gt) from the run name
+mypheno = unlist(strsplit(run2process, split = "_", fixed = TRUE))
+names(mypheno) = c("tp", "seq", "gt")
+
+# Gene Expression matrix
+gex = input.data$`Gene Expression`
+
+# Antibody / hashtag matrix - read ADT and HTO separately
+abs = rownames(input.data$`Antibody Capture`)
+hto.abs_all = c(abs[grep('wk', abs)], abs[grep('NA', abs)])
+adt_abs = abs[grep('ab', abs)]
+
+# Only include specific HTO antibodies (see 1a. conclusions)
+hto_abs = hto.abs_all[grep(mypheno["gt"], hto.abs_all)]
+
+# Update formats to match Seurat convention
+hto.abs = gsub("_", "-", hto_abs)
+adt.abs = gsub("_", "-", adt_abs)
+
+hto = input.data$`Antibody Capture`[hto_abs,]
+adt = input.data$`Antibody Capture`[adt_abs,]
+
+# Confirm that the same cells are present in the same order for each matrix
+if (all.equal(colnames(adt), colnames(gex)) &
+    all.equal(colnames(adt), colnames(hto)) &
+    all.equal(colnames(gex), colnames(hto))) {
+  print("Column order consistent - antibody, hashtags, and gene expression")
+} else {
+  print("Column order inconsistent among antibody, hashtags, and gene expression - need to fix it.")
+}
+
+# Select cell barcodes detected by both RNA and HTO 
+joint.bcs <- intersect(colnames(gex), colnames(adt))
+print(sprintf("Number of cells in common: %i", length(joint.bcs)))
+```
+
+| Matrix           	| n Features 	| n Cells 	|
+|------------------	|:-------:	|:-------:	|
+| Gene Expression  	|     `r dim(gex)[1]` 	|     `r dim(gex)[2]` 	|
+| Hashtag Oligos  	|     `r dim(hto)[1]` 	|     `r dim(hto)[2]` 	|
+| Antibody Capture |     `r dim(adt)[1]` 	|     `r dim(adt)[2]` 	|
+
+```{r, create_SeuratObj, echo=FALSE}
+# Set thresholds for cell, feature inclusion
+min.cells = 3
+min.features = 200
+
+# Initialize the Seurat object with the raw (non-normalized data).
+seuratObj <- CreateSeuratObject(counts = gex, project = run2process, min.cells = min.cells, min.features = min.features)
+
+seuratObj$tp <- mypheno["tp"]
+seuratObj$seq <- mypheno["seq"]
+seuratObj$gt <- mypheno["gt"]
+
+seuratObj
+```
+
+Seurat object `r run2process` created   
+Timepoint:  `r unique(seuratObj$tp)`   
+Sequencing: `r unique(seuratObj$seq)`   
+Genotype:  `r unique(seuratObj$gt)`   
+All included features present in at least `r min.cells` cells; filtered out `r dim(gex)[1] - dim(seuratObj)[1]` features    
+All included cells have at least `r min.features` features; filtered out `r dim(gex)[2] - dim(seuratObj)[2]` cells   
+
+### Demultiplex HTOs
+Reviewed HTO assignment in a separate document. Filter out unused HTO barcodes.
+
+```{r, HTO_demux, message = FALSE, echo=FALSE}
+# Add the HTO assay
+myassay = "HTO"
+myfeatures = hto.abs
+# Cells may have been trimmed from the assay when the seuratObj was created. Need to trim the HTO assay to the same set.
+if (myassay == "HTO") {
+  seuratObj[[myassay]] <- CreateAssayObject(counts = hto[, colnames(seuratObj)])
+} else if (myassay == "ADT") {
+  seuratObj[[myassay]] <- CreateAssayObject(counts = adt[, colnames(seuratObj)])
+}
+seuratObj <- NormalizeData(seuratObj, assay = myassay, normalization.method = "CLR")
+seuratObj <- ScaleData(seuratObj, assay = myassay)
+```
+
+#### Check the stability of the MULTIseqDemux HTO assignments
+
+```{r, HTO_stability, message=FALSE, echo=FALSE}
+# HTODemux didn't work with the wk6_novo_wt or the wk6_mpssr_wt data set; per suggestions at Seurat, went to MULTISeqDemux, which did work
+check_assign_ls = list()
+niter = 10
+for (i in 1:niter) {
+  seuratObj <- MULTIseqDemux(object = seuratObj, assay = myassay, autoThresh = TRUE, qrange = seq(from = 0.1, to = 0.9, by = 0.05))
+  kable(table(seuratObj$MULTI_ID))
+  check_assign_ls[[i]] <- as.character(seuratObj$MULTI_classification)
+  names(check_assign_ls[[i]]) <- colnames(seuratObj)
+}
+
+checkassign.mat = as.matrix(as.data.table(check_assign_ls))
+rownames(checkassign.mat) <- colnames(seuratObj)
+
+# Don't know why, but some cells get NA for their assignment...
+checkassign.mat[is.na(checkassign.mat)] = "NoAssign"
+message(sprintf("%s:  %i cells have NA assignment", run2process, sum(checkassign.mat[,1] == "NoAssign")))
+check.equal = rowSums(checkassign.mat == checkassign.mat[,1])
+if (sum(check.equal == 10) == ncol(seuratObj)) {
+  consistent = TRUE
+  print(sprintf("%s:  %i iterations, all assignments identical", run2process, niter))
+} else {
+  consistent = FALSE
+  print(sprintf("%s:  %i iterations, variation in assignments -- investigate some more", run2process, niter))
+}
+
+# Plot summary of mapping
+summary_class = as.data.table(table(seuratObj$MULTI_classification))
+colnames(summary_class) = c("MULTI_classification", "n_Cells")
+ncells = sum(summary_class$n_Cells)
+summary_class[, pct_Cells := round(n_Cells/ncells*100, 1)]
+kable(summary_class, caption = sprintf("%s: Summary Detailed %s mapping; %i total cells", run2process, myassay, ncells))
+
+par(mar = c(9.3, 4.2, 2.0, 1.0))
+barp = barplot(summary_class$pct_Cells, names.arg = summary_class$MULTI_classification, las = 2,
+        ylab = "Percent of Cells", main = sprintf("%s - MULTI_classification", run2process))
+#text(x = barp[,1], y = summary_class$pct_Cells, summary_class$pct_Cells)
+
+# Plot summary of ids
+summary_id = as.data.table(table(seuratObj$MULTI_ID))
+colnames(summary_id) = c("MULTI_ID", "n_Cells")
+ncells = sum(summary_id$n_Cells)
+summary_id[, pct_Cells := round(n_Cells/ncells*100, 1)]
+kable(summary_id, caption = sprintf("%s: Summary %s mapping; %i total cells", run2process, myassay, ncells))
+
+par(mar = c(5.3, 4.2, 2.0, 1.0))
+barp = barplot(summary_id$pct_Cells, names.arg = summary_id$MULTI_ID, las = 2,
+        ylab = "Percent of Cells", main = sprintf("%s - MULTI_ID", run2process))
+
+colnames2update = c("MULTI_classification", "MULTI_ID")
+for (mycolname in colnames2update) {
+  colnames(seuratObj@meta.data)[grepl(paste(mycolname, "$", sep = ""), colnames(seuratObj@meta.data))] <-
+    paste(mycolname, myassay, sep = "_")
+}
+
+seuratObj
+```
+
+#### Plot Distributions of HTO Assignments
+```{r, HTO_ridge, message=FALSE, fig.fullwidth = TRUE, fig.height = 10, echo=FALSE}
+Idents(seuratObj) <- paste("MULTI_ID", myassay, sep = "_")
+
+RidgePlot(seuratObj, assay = myassay, features = myfeatures, ncol = 2)
+```
+
+```{r, HTO_dist, message=FALSE, echo=FALSE}
+for (myfeat1 in 1:(length(myfeatures)-1)) {
+  for (myfeat2 in (myfeat1 + 1):length(myfeatures)) {
+    FeatureScatter(seuratObj, feature1 = paste(tolower(myassay), myfeatures[myfeat1], sep = "_"),
+                              feature2 = paste(tolower(myassay), myfeatures[myfeat2], sep = "_"))
+  }
+}
+
+VlnPlot(seuratObj, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+VlnPlot(seuratObj, features = paste("nCount", myassay, sep = "_"), pt.size = 0.1, log = TRUE)
+```
+
+#### Plot HTO tSNE
+
+```{r, HTO_tSNE, message=FALSE, echo=FALSE}
+my.dist.mat <- as.matrix(dist(t(GetAssayData(object = seuratObj, assay = myassay))))
+subset_seuratObj <- RunTSNE(seuratObj, distance.matrix = my.dist.mat, perplexity = 100)
+DimPlot(subset_seuratObj)
+```
+
+### Demultiplex ADTs
+
+```{r, incorpADT, message=FALSE, echo=FALSE}
+# Add the ADT assay
+myassay = "ADT"
+myfeatures = adt.abs
+# Cells may have been trimmed from the assay when the seuratObj was created. Need to trim the HTO assay to the same set.
+if (myassay == "HTO") {
+  seuratObj[[myassay]] <- CreateAssayObject(counts = hto[, colnames(seuratObj)])
+} else if (myassay == "ADT") {
+  seuratObj[[myassay]] <- CreateAssayObject(counts = adt[, colnames(seuratObj)])
+}
+seuratObj <- NormalizeData(seuratObj, assay = myassay, normalization.method = "CLR")
+seuratObj <- ScaleData(seuratObj, assay = myassay) 
+```
+
+#### Check the stability of the MULTIseqDemux ADT assignments
+
+```{r, ADT_stability, message=FALSE, echo=FALSE}
+# HTODemux didn't work with the wk6_novo_wt or the wk6_mpssr_wt data set; per suggestions at Seurat, went to MULTISeqDemux, which did work
+if (params$calcADT) {
+  
+check_assign_ls = list()
+niter = 10
+for (i in 1:niter) {
+ seuratObj <- MULTIseqDemux(object = seuratObj, assay = myassay, autoThresh = TRUE, qrange = seq(from = 0.1, to = 0.9, by = 0.05))
+  kable(table(seuratObj$MULTI_ID))
+  check_assign_ls[[i]] <- as.character(seuratObj$MULTI_classification)
+  names(check_assign_ls[[i]]) <- colnames(seuratObj)
+}
+
+checkassign.mat = as.matrix(as.data.table(check_assign_ls))
+rownames(checkassign.mat) <- colnames(seuratObj)
+
+# Don't know why, but some cells get NA for their assignment...
+checkassign.mat[is.na(checkassign.mat)] = "NoAssign"
+message(sprintf("%s:  %i cells have NA assignment", run2process, sum(checkassign.mat[,1] == "NoAssign")))
+check.equal = rowSums(checkassign.mat == checkassign.mat[,1])
+if (sum(check.equal == 10) == ncol(seuratObj)) {
+  consistent = TRUE
+  print(sprintf("%s:  %i iterations, all assignments identical", run2process, niter))
+} else {
+  consistent = FALSE
+  print(sprintf("%s:  %i iterations, variation in assignments -- investigate some more", run2process, niter))
+}
+
+# Plot summary of mapping
+summary_class = as.data.table(table(seuratObj$MULTI_classification))
+colnames(summary_class) = c("MULTI_classification", "n_Cells")
+ncells = sum(summary_class$n_Cells)
+summary_class[, pct_Cells := round(n_Cells/ncells*100, 1)]
+kable(summary_class, caption = sprintf("%s: Summary Detailed %s mapping; %i total cells", run2process, myassay, ncells))
+
+par(mar = c(9.3, 4.2, 2.0, 1.0))
+barp = barplot(summary_class$pct_Cells, names.arg = summary_class$MULTI_classification, las = 2,
+        ylab = "Percent of Cells", main = sprintf("%s - MULTI_classification", run2process))
+#text(x = barp[,1], y = summary_class$pct_Cells, summary_class$pct_Cells)
+
+# Plot summary of ids
+summary_id = as.data.table(table(seuratObj$MULTI_ID))
+colnames(summary_id) = c("MULTI_ID", "n_Cells")
+ncells = sum(summary_id$n_Cells)
+summary_id[, pct_Cells := round(n_Cells/ncells*100, 1)]
+kable(summary_id, caption = sprintf("%s: Summary %s mapping; %i total cells", run2process, myassay, ncells))
+
+par(mar = c(5.3, 4.2, 2.0, 1.0))
+barp = barplot(summary_id$pct_Cells, names.arg = summary_id$MULTI_ID, las = 2,
+        ylab = "Percent of Cells", main = sprintf("%s - MULTI_ID", run2process))
+
+colnames2update = c("MULTI_classification", "MULTI_ID")
+for (mycolname in colnames2update) {
+  colnames(seuratObj@meta.data)[grepl(paste(mycolname, "$", sep = ""), colnames(seuratObj@meta.data))] <-
+    paste(mycolname, myassay, sep = "_")
+}
+}
+seuratObj
+```
+
+#### Plot Distributions of ADT Assignments
+```{r, ADT_ridge, message=FALSE, fig.fullwidth = TRUE, fig.height = 15, echo=FALSE}
+Idents(seuratObj) <- paste("MULTI_ID", myassay, sep = "_")
+
+RidgePlot(seuratObj, assay = myassay, features = myfeatures, ncol = 3)
+```
+
+```{r, ADT_plots, echo=FALSE}
+for (myfeat1 in 1:(length(myfeatures)-1)) {
+  for (myfeat2 in (myfeat1 + 1):length(myfeatures)) {
+    FeatureScatter(seuratObj, feature1 = paste(tolower(myassay), myfeatures[myfeat1], sep = "_"),
+                              feature2 = paste(tolower(myassay), myfeatures[myfeat2], sep = "_"))
+  }
+}
+
+VlnPlot(seuratObj, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+VlnPlot(seuratObj, features = paste("nCount", myassay, sep = "_"), pt.size = 0.1, log = TRUE)
+```
+
+#### Plot ADT tSNE
+
+```{r, ADT_tSNE, echo=FALSE}
+my.dist.mat <- as.matrix(dist(t(GetAssayData(object = seuratObj, assay = myassay))))
+subset_seuratObj <- RunTSNE(seuratObj, distance.matrix = my.dist.mat, perplexity = 100)
+Idents(seuratObj) <- paste("MULTI_classification", myassay, sep = "_")
+DimPlot(subset_seuratObj)
+```
+
+***
+### Write the Seurat object to a file
+
+```{r, saveObject, echo=FALSE}
+file2save = params$file2save
+file2save = ifelse(file2save == "default", run2process, file2save)
+filename = sprintf("%s_1.SeuratObj_%s.rds", file2save, Sys.Date())
+
+print(sprintf("Saving %s to file %s at %s", run2process, filename, directory$rda))
+
+saveRDS(seuratObj, sprintf("%s/%s", directory$rda, filename))
+```
+
+***
+#### Session Information
+```{r, echo=FALSE}
+sessionInfo()
+```

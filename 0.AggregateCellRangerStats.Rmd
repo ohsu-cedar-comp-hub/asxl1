@@ -1,0 +1,398 @@
+---
+title: "Aggregate Cell Ranger Outputs"
+author: "TLusardi"
+date: "8/26/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Experimental Info
+On Box - scRNA Seq - ASXL1_compileMeta.<date>.xlsx
+
+#### Cellranger output at
+/home/groups/CEDAR/braun/cellranger
+
+#### Aggregate cellranger count output statistics
+Assume that individual metrics_summary.csv files are in well named directories.
+
+```{r, echo=FALSE}
+# Set up libraries
+library(Seurat)
+library(data.table)
+```
+
+
+```{r, echo=FALSE}
+# Set source directory, read in individual experiment directories
+sourceDir = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/raw"
+runs = list.dirs(path = sourceDir, full.names = FALSE, recursive = FALSE)
+
+```
+
+```{r, echo=FALSE}
+# Read in metrics_summary.csv data, collapse into a data.table
+metricsFile = "metrics_summary.csv"
+
+# Note that the file contains commas and %s - need to set classes and strip out
+setClass("num.with.commas")
+setAs("character", "num.with.commas", function(from) as.numeric(gsub(",", "", from)))
+setClass("num.with.pct")
+setAs("character", "num.with.pct", function(from) as.numeric(gsub("%", "", from)))
+
+# metrics_summary has well-behaved (consistent) column headers
+# -- Only experiment-relevant columns are included in the data set
+# -- Presence/absence of antibodies is a challenge; columns are interleaved.
+# Plan: Read the file twice; the first time, get the column headers so that the column class can be set in the second read.
+
+# Set column classes for all possible columns
+metrics_colClasses = c(RunID = 'character',
+                       Estimated.Number.of.Cells = 'num.with.commas',
+                       Mean.Reads.per.Cell = 'num.with.commas',
+                       Median.Genes.per.Cell = 'num.with.commas',
+                       Number.of.Reads = 'num.with.commas',
+                       Valid.Barcodes = 'num.with.pct',
+                       Sequencing.Saturation = 'num.with.pct',
+                       Q30.Bases.in.Barcode = 'num.with.pct',
+                       Q30.Bases.in.RNA.Read = 'num.with.pct',
+                       Q30.Bases.in.Sample.Index = 'num.with.pct',
+                       Q30.Bases.in.UMI = 'num.with.pct',
+                       Reads.Mapped.to.Genome = 'num.with.pct',
+                       Reads.Mapped.Confidently.to.Genome = 'num.with.pct',
+                       Reads.Mapped.Confidently.to.Intergenic.Regions = 'num.with.pct',
+                       Reads.Mapped.Confidently.to.Intronic.Regions = 'num.with.pct',
+                       Reads.Mapped.Confidently.to.Exonic.Regions = 'num.with.pct',
+                       Reads.Mapped.Confidently.to.Transcriptome = 'num.with.pct',
+                       Reads.Mapped.Antisense.to.Gene = 'num.with.pct',
+                       Fraction.Reads.in.Cells = 'num.with.pct',
+                       Total.Genes.Detected = 'num.with.commas',
+                       Median.UMI.Counts.per.Cell = 'num.with.commas',
+                       Antibody..Number.of.Reads = 'num.with.commas',
+                       Antibody..Mean.Reads.per.Cell = 'num.with.commas',
+                       Antibody..Valid.Barcodes = 'num.with.pct',
+                       Antibody..Sequencing.Saturation = 'num.with.pct',
+                       Antibody..Q30.Bases.in.Barcode = 'num.with.pct',
+                       Antibody..Q30.Bases.in.Antibody.Read = 'num.with.pct',
+                       Antibody..Q30.Bases.in.Sample.Index = 'num.with.pct',
+                       Antibody..Q30.Bases.in.UMI = 'num.with.pct',
+                       Antibody..Fraction.Antibody.Reads = 'num.with.pct',
+                       Antibody..Fraction.Antibody.Reads.Usable = 'num.with.pct',
+                       Antibody..Antibody.Reads.Usable.per.Cell = 'num.with.commas',
+                       Antibody..Fraction.Reads.in.Barcodes.with.High.UMI.Counts = 'num.with.pct',
+                       Antibody..Fraction.Unrecognized.Antibody = 'num.with.pct',
+                       Antibody..Antibody.Reads.in.Cells = 'num.with.pct',
+                       Antibody..Median.UMIs.per.Cell..summed.over.all.recognized.antibody.barcodes. = 'num.with.commas')
+
+summary_ls = list()
+for (myrun in runs) {
+  myfiles = list.files(path = paste(sourceDir, myrun, sep = "/"))
+  if (metricsFile %chin% myfiles) {
+    message(sprintf("Including metrics from directory %s", myrun))
+    
+    # Read in the column names, make them legal R column names, then get the appropriate classes
+    mydt = fread(sprintf("%s/%s/%s", sourceDir, myrun, metricsFile))
+    mycols = make.names(colnames(mydt))
+    myclasses = metrics_colClasses[mycols]
+    
+    # Read in data 
+    summary_ls[[myrun]] = read.csv(sprintf("%s/%s/%s", sourceDir, myrun, metricsFile), colClasses = myclasses)
+    
+  } else {
+    message(sprintf("Directory %s does not contain a file called %s", myrun, metricsFile))
+  }
+}
+summary.dt = rbindlist(summary_ls, use.names = TRUE, fill = TRUE, idcol = "RunID")
+
+```
+
+### Summary RNA seq stats
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Create a table of data to be plotted
+cols2plot = c("RunID", "Estimated.Number.of.Cells", "Number.of.Reads", "Total.Genes.Detected",
+              "Mean.Reads.per.Cell", "Median.UMI.Counts.per.Cell", "Median.Genes.per.Cell")
+library(knitr)
+kable(summary.dt[, mget(cols2plot)])
+axis_names = gsub("_", "\n", summary.dt$RunID)
+xlimits = c(0, length(axis_names) + 1)
+ylimits = c(0, ceiling(max(summary.dt$Estimated.Number.of.Cells)/10500)*10500)
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(height = summary.dt$Estimated.Number.of.Cells, ylab = "Estimated Number of Cells", xlim = xlimits,
+                 main = "Summary RNA seq by run", ylim = ylimits,
+                 sub = "Number of Reads")
+text(myplot[,1], rep(-2000, length(axis_names)), labels = axis_names, xpd = TRUE)
+myreads = sprintf(summary.dt$Number.of.Reads, fmt='%.2e')
+text(myplot[,1], rep(-5000, length(axis_names)), labels = myreads, xpd = TRUE, cex = 0.8)
+
+# Add some additional points per run
+cols2point = list(
+                  Total.Genes.Detected = list(color = "darkgreen", symbol = 17, legendtext = "Total Genes"),
+                  Mean.Reads.per.Cell = list(color = "red", symbol = 15, legendtext = "Mean Reads/Cell"),
+                  Median.UMI.Counts.per.Cell = list(color = "darkblue", symbol = 16, legendtext = "Med UMI/Cell"),
+                  Median.Genes.per.Cell = list(color = "lightblue", symbol = 16, legendtext = "Med Genes/Cell")
+                  )
+
+for (mypoints in names(cols2point)) {
+  par(new = TRUE)
+  plot(x = myplot[,1], y = summary.dt[[mypoints]], axes = FALSE, bty = "n", xlab = "", ylab = "", xlim = xlimits,
+       ylim = ylimits, pch = cols2point[[mypoints]]$symbol, col = cols2point[[mypoints]]$color, cex = 1.2) 
+#  text(x = myplot[,1], y = summary.dt[[mypoints]], summary.dt[[mypoints]], pos = 1)
+}
+
+# Add a legend for the points
+legend(x = "topright", legend = rbindlist(cols2point)$legendtext,
+       col = rbindlist(cols2point)$color, bty = "n", 
+       inset= c(-0.25, 0), cex = 0.8, pch = rbindlist(cols2point)$symbol)
+```
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Select columns to plot
+cols2plot = c("RunID", "Valid.Barcodes", "Sequencing.Saturation")
+kable(summary.dt[, mget(cols2plot)])
+# Create a Matrix of desired data
+plotmatrix = as.matrix(summary.dt[, mget(cols2plot)], rownames = "RunID")
+
+# Set colors by sequencing run
+plotcolors = c(wk04_mpssr_wt = "purple", wk04_mpssr_mut = "purple",
+               wk04_novo_wt = "red", wk04_novo_mut = "red",
+               wk12_mpssr_mut = "blue", wk12_mpssr_wt = "blue",
+               wk36_mpssr_mut = "green", wk36_mpssr_wt = "green",
+               wk36_novo_mut = "orange", wk36_novo_wt = "orange")
+
+plotlabels = colnames(plotmatrix)
+#barplot(plotmatrix, beside = TRUE, ylim = c(0, 100), ylab = "Percent",
+#        col = plotcolors[rownames(plotmatrix)], legend.text = TRUE)
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(plotmatrix, beside = TRUE, ylim = c(0, 100), ylab = "Percent",
+                 names.arg = rep("", length(plotlabels)),
+                 main = ("Stats"),
+                 col = plotcolors[rownames(plotmatrix)])
+axis(side = 1, at = colMeans(myplot), labels = plotlabels, cex.axis = 1.0, padj = 0.7)
+legend(x = "topright", legend = rownames(plotmatrix), col = plotcolors[rownames(plotmatrix)], bty = "n", 
+       inset= c(-0.2, 0), cex = 0.8, pch = 16)
+```
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Select columns to plot
+cols2plot = c("RunID", "Q30.Bases.in.Barcode", "Q30.Bases.in.RNA.Read", "Q30.Bases.in.Sample.Index", "Q30.Bases.in.UMI" )
+kable(summary.dt[, mget(cols2plot)])
+# Create a Matrix of desired data
+plotmatrix = as.matrix(summary.dt[, mget(cols2plot)], rownames = "RunID")
+
+plotlabels = gsub("Q30.Bases.in", "", colnames(plotmatrix))
+plotlabels = gsub("^\\.", "", plotlabels)
+plotlabels = gsub("\\.", " ", plotlabels)
+
+# Set colors by sequencing run
+plotcolors = c(wk04_mpssr_wt = "purple", wk04_mpssr_mut = "purple",
+               wk04_novo_wt = "red", wk04_novo_mut = "red",
+               wk12_mpssr_mut = "blue", wk12_mpssr_wt = "blue",
+               wk36_mpssr_mut = "green", wk36_mpssr_wt = "green",
+               wk36_novo_mut = "orange", wk36_novo_wt = "orange")
+  
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(plotmatrix, beside = TRUE, ylim = c(0, 100), ylab = "Percent",
+                 names.arg = rep("", length(plotlabels)),
+                 main = ("Fraction of Bases with Q-Score > 30 (>99.9% accurate)"),
+                 col = plotcolors[rownames(plotmatrix)])
+axis(side = 1, at = colMeans(myplot), labels = plotlabels, cex.axis = 1.0, padj = 0.7)
+legend(x = "topright", legend = rownames(plotmatrix), col = plotcolors[rownames(plotmatrix)], bty = "n", 
+       inset= c(-0.2, 0), cex = 0.8, pch = 16)
+
+```
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Select columns to plot
+cols2plot = c("RunID", "Reads.Mapped.to.Genome", "Reads.Mapped.Confidently.to.Genome",
+              "Reads.Mapped.Confidently.to.Intergenic.Regions",  "Reads.Mapped.Confidently.to.Intronic.Regions", 
+              "Reads.Mapped.Confidently.to.Exonic.Regions", "Reads.Mapped.Confidently.to.Transcriptome", 
+              "Reads.Mapped.Antisense.to.Gene", "Fraction.Reads.in.Cells")
+kable(summary.dt[, mget(cols2plot)])
+# Create a Matrix of desired data
+plotmatrix = as.matrix(summary.dt[, mget(cols2plot)], rownames = "RunID")
+
+plotlabels = gsub("Q30.Bases.in", "", colnames(plotmatrix))
+plotlabels = gsub("^\\.", "", plotlabels)
+plotlabels = gsub("\\.", "\n", plotlabels)
+
+# Set colors by sequencing run
+plotcolors = c(wk04_mpssr_wt = "purple", wk04_mpssr_mut = "purple",
+               wk04_novo_wt = "red", wk04_novo_mut = "red",
+               wk12_mpssr_mut = "blue", wk12_mpssr_wt = "blue",
+               wk36_mpssr_mut = "green", wk36_mpssr_wt = "green",
+               wk36_novo_mut = "orange", wk36_novo_wt = "orange")
+
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(plotmatrix, beside = TRUE, ylim = c(0, 100), ylab = "Percent",
+                 names.arg = rep("", length(plotlabels)),
+                 main = ("Mapping Statistics"),
+                 col = plotcolors[rownames(plotmatrix)])
+axis(side = 1, at = colMeans(myplot), labels = plotlabels, cex.axis = 0.7, padj = 0.7)
+legend(x = "topright", legend = rownames(plotmatrix), col = plotcolors[rownames(plotmatrix)], bty = "n", 
+       inset= c(-0.2, 0), cex = 0.8, pch = 16)
+
+```
+
+
+### Review Mapping Stats - wk04_novo
+Reviewed over-represented sequences wk04_novo_mut:
+
+* Index - SI-GA-F7  Chromium 10x Indexes (as expected)
+* Read1 - no overrepresented sequences
+* Read2 - Possible source: Clontech SMARTer II A Oligonucleotide (~3%)
+  
+Reviewed over-represented sequences wk04_novo_wt:
+
+* Index - SI-GA-G7  Chromium 10x Indexes (as expected)
+* Read1 - no overrepresented sequences
+* Read2 - Possible source: Clontech SMARTer II A Oligonucleotide (~2%)
+  
+Trevor ran fastq screen 
+
+* Definitely human contamination
+* Need to re-run on MPSSR sequencing, but mapping stats are significantly improved.
+* Consider whether to merge Novo and MPSSR seq data.
+
+
+***
+
+### Summary Antibody seq stats (HTO & ADT)
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Create a table of data to be plotted
+cols2plot = c("RunID", "Estimated.Number.of.Cells", "Antibody..Number.of.Reads", "Antibody..Mean.Reads.per.Cell")
+library(knitr)
+kable(summary.dt[, mget(cols2plot)])
+axis_names = gsub("_", "\n", summary.dt$RunID)
+xlimits = c(0, length(axis_names) + 1)
+ylimits = c(0, ceiling(max(summary.dt$Estimated.Number.of.Cells)/10500)*10500)
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(height = summary.dt$Estimated.Number.of.Cells, ylab = "Estimated Number of Cells", xlim = xlimits,
+                 main = "Summary Antibody seq by run", ylim = ylimits,
+                 sub = "Number of Reads")
+text(myplot[,1], rep(-2000, length(axis_names)), labels = axis_names, xpd = TRUE)
+myreads = sprintf(summary.dt$Number.of.Reads, fmt='%.2e')
+text(myplot[,1], rep(-5000, length(axis_names)), labels = myreads, xpd = TRUE, cex = 0.8)
+
+# Add some additional points per run
+cols2point = list(
+                  Antibody..Number.of.Reads = list(color = "darkgreen", symbol = 17, legendtext = "# Ab Reads"),
+                  Antibody..Mean.Reads.per.Cell = list(color = "red", symbol = 15, legendtext = "Mean Ab Reads/Cell")
+                  )
+
+for (mypoints in names(cols2point)) {
+  par(new = TRUE)
+  plot(x = myplot[,1], y = summary.dt[[mypoints]], axes = FALSE, bty = "n", xlab = "", ylab = "", xlim = xlimits,
+       ylim = ylimits, pch = cols2point[[mypoints]]$symbol, col = cols2point[[mypoints]]$color, cex = 1.2) 
+#  text(x = myplot[,1], y = summary.dt[[mypoints]], summary.dt[[mypoints]], pos = 1)
+}
+
+# Add a legend for the points
+legend(x = "topright", legend = rbindlist(cols2point)$legendtext,
+       col = rbindlist(cols2point)$color, bty = "n", 
+       inset= c(-0.25, 0), cex = 0.8, pch = rbindlist(cols2point)$symbol)
+```
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Select columns to plot
+cols2plot = c("RunID", "Antibody..Valid.Barcodes", "Antibody..Sequencing.Saturation")
+kable(summary.dt[, mget(cols2plot)])
+# Create a Matrix of desired data
+plotmatrix = as.matrix(summary.dt[, mget(cols2plot)], rownames = "RunID")
+
+# Set colors by sequencing run
+plotcolors = c(wk04_mpssr_wt = "purple", wk04_mpssr_mut = "purple",
+               wk04_novo_wt = "red", wk04_novo_mut = "red",
+               wk12_mpssr_mut = "blue", wk12_mpssr_wt = "blue",
+               wk36_mpssr_mut = "green", wk36_mpssr_wt = "green",
+               wk36_novo_mut = "orange", wk36_novo_wt = "orange")
+
+plotlabels = colnames(plotmatrix)
+
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(plotmatrix, beside = TRUE, ylim = c(0, 100), ylab = "Percent",
+                 names.arg = rep("", length(plotlabels)),
+                 main = ("Antibody Stats"),
+                 col = plotcolors[rownames(plotmatrix)])
+axis(side = 1, at = colMeans(myplot), labels = plotlabels, cex.axis = 1.0, padj = 0.7)
+legend(x = "topright", legend = rownames(plotmatrix), col = plotcolors[rownames(plotmatrix)], bty = "n", 
+       inset= c(-0.2, 0), cex = 0.8, pch = 16)
+```
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Select columns to plot
+cols2plot = c("RunID", "Antibody..Q30.Bases.in.Barcode", "Antibody..Q30.Bases.in.Antibody.Read",
+              "Antibody..Q30.Bases.in.Sample.Index", "Antibody..Q30.Bases.in.UMI" )
+kable(summary.dt[, mget(cols2plot)])
+# Create a Matrix of desired data
+plotmatrix = as.matrix(summary.dt[, mget(cols2plot)], rownames = "RunID")
+
+plotlabels = gsub("Antibody..Q30.Bases.in", "", colnames(plotmatrix))
+plotlabels = gsub("^\\.", "", plotlabels)
+plotlabels = gsub("\\.", " ", plotlabels)
+
+# Set colors by sequencing run
+plotcolors = c(wk04_mpssr_wt = "purple", wk04_mpssr_mut = "purple",
+               wk04_novo_wt = "red", wk04_novo_mut = "red",
+               wk12_mpssr_mut = "blue", wk12_mpssr_wt = "blue",
+               wk36_mpssr_mut = "green", wk36_mpssr_wt = "green",
+               wk36_novo_mut = "orange", wk36_novo_wt = "orange")
+  
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(plotmatrix, beside = TRUE, ylim = c(0, 100), ylab = "Percent",
+                 names.arg = rep("", length(plotlabels)),
+                 main = ("Fraction of antibody Bases with Q-Score > 30 (>99.9% accurate)"),
+                 col = plotcolors[rownames(plotmatrix)])
+axis(side = 1, at = colMeans(myplot), labels = plotlabels, cex.axis = 1.0, padj = 0.7)
+legend(x = "topright", legend = rownames(plotmatrix), col = plotcolors[rownames(plotmatrix)], bty = "n", 
+       inset= c(-0.2, 0), cex = 0.8, pch = 16)
+
+```
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+# Select columns to plot
+cols2plot = c("RunID", "Antibody..Fraction.Antibody.Reads", "Antibody..Fraction.Antibody.Reads.Usable",
+              "Antibody..Fraction.Reads.in.Barcodes.with.High.UMI.Counts",
+              "Antibody..Fraction.Unrecognized.Antibody", "Antibody..Antibody.Reads.in.Cells")
+
+unusedCols = c("Antibody..Antibody.Reads.Usable.per.Cell",
+               "Antibody..Median.UMIs.per.Cell..summed.over.all.recognized.antibody.barcodes.")
+kable(summary.dt[, mget(cols2plot)])
+# Create a Matrix of desired data
+plotmatrix = as.matrix(summary.dt[, mget(cols2plot)], rownames = "RunID")
+
+plotlabels = gsub("^Antibody..", "", colnames(plotmatrix))
+plotlabels = gsub("^\\.", "", plotlabels)
+plotlabels = gsub("\\.", "\n", plotlabels)
+
+# Set colors by sequencing run
+plotcolors = c(wk04_mpssr_wt = "purple", wk04_mpssr_mut = "purple",
+               wk04_novo_wt = "red", wk04_novo_mut = "red",
+               wk12_mpssr_mut = "blue", wk12_mpssr_wt = "blue",
+               wk36_mpssr_mut = "green", wk36_mpssr_wt = "green",
+               wk36_novo_mut = "orange", wk36_novo_wt = "orange")
+
+# Make the right margin big enough for the legend
+par(mar=c(5.1, 4.1, 4.1, 9.1), xpd=TRUE)
+myplot = barplot(plotmatrix, beside = TRUE, ylim = c(0, 100), ylab = "Percent",
+                 names.arg = rep("", length(plotlabels)),
+                 main = ("Antibody Summary Statistics"),
+                 col = plotcolors[rownames(plotmatrix)])
+axis(side = 1, at = colMeans(myplot), labels = plotlabels, cex.axis = 0.7, padj = 0.7)
+legend(x = "topright", legend = rownames(plotmatrix), col = plotcolors[rownames(plotmatrix)], bty = "n", 
+       inset= c(-0.2, 0), cex = 0.8, pch = 16)
+
+```
+
+
+#### Session Information
+```{r, echo=FALSE}
+sessionInfo()
+```
