@@ -4,6 +4,7 @@ Understanding the mechanisms of leukemicprogression in ASXL1 mutant clonal hemat
 #### Tracking Object creation -  
 0.<filename>.Rmd - pre-seurat object   
 1.<fn>.Rmd - import relevant scripts - creating a run-specific seurat object   
+   * 1.RunQC.Rmd
 2.<fn>.Rmd - normalization relevant   
 3.<fn>.Rmd - cluster identification - I've separated this out from normalization because I'm not sure where it fits best. Also, it's likely to evolve over time.   
 4.<fn>.Rmd - integration/merge   
