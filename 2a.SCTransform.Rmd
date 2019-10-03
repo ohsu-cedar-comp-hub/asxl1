@@ -1,0 +1,162 @@
+---
+title: "Normalize Seurat Object"
+author: "TLusardi"
+date: "9/27/2019"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+params:
+  run2process: "wk36_mpssr_wt"
+  file2save: "default"
+  saveObj: FALSE
+---
+
+1. Read Seurat Object
+2. Normalize/Scale using SCTransform
+3. Create plots
+4. Write updated object
+
+Consider adding an evaluation of SCTransform vs. Normalize/Scale
+  + Compare the methods - consider n-features
+
+```{r setup_libs, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(sctransform)
+library(data.table)
+library(knitr)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+
+run2process = params$run2process
+saveObj = params$saveObj
+```
+
+## Read Seurat Object - `r run2process`
+
+```{r setup_vars, include=FALSE}
+# Could (should?) probably make these parameters that can be passed in
+directory = list(rda = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/rda")
+```
+Source Data Directory:  `r directory$raw`   
+Processed Data Directory:  `r directory$rda`   
+Processed Run:  `r run2process`   
+
+```{r, readObject, echo=FALSE}
+files2choose = list.files(directory$rda)
+files2choose <- files2choose[!grepl("scTxform", files2choose)]
+filename = sprintf("%s_SeuratObj", run2process)
+# If there are multiple files with the object name, choose the last one in the list. This may not be the best option
+selectmulti = sum(grepl(filename, files2choose))
+file2open = files2choose[grepl(filename, files2choose)]
+if (sum(grepl(filename, files2choose)) > 1) {message(sprintf("WARNING!!! %s had multiple options. Chose %s", run2process, file2open))}
+seuratObj = readRDS(paste(directory$rda, file2open, sep = "/"))
+Idents(seuratObj) <- "orig.ident"
+```
+
+### Calculate % Mitochondrial Genes per cell
+```{r, calcMito, echo=FALSE}
+seuratObj[["percent.mt"]] <- PercentageFeatureSet(object = seuratObj, pattern = "^mt-")
+
+#Visualize QC metrics as a violin plot
+VlnPlot(object = seuratObj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0.3)
+
+# Plot density function of percent.mt
+# Consider how much to include/exclude
+colors = c('#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#ffff33','#a65628','#f781bf','#999999')
+probs = c(0.99, 0.95, 0.9, 0.85, 0.80)
+cut_opts = quantile(seuratObj@meta.data$percent.mt, probs = probs)
+p1 <- plot(density(seuratObj@meta.data$percent.mt), main = sprintf("Distribution of %% Mitochondrial Cells %s", "Wildtype"))
+for (i in 1:length(cut_opts)) {
+  p1 <- abline(v = cut_opts[i], col = colors[i])
+}
+legend_text = paste(probs, round(cut_opts, 1), sep = " - ")
+p1 <- legend(x = "topright", legend = legend_text, col = colors[1:length(probs)], pch = 16)
+```
+
+***
+### Calculate SCTransform
+
+```{r, scTx, warning=FALSE, echo=FALSE}
+print("Running SCT.all")
+seuratObj.all <- SCTransform(seuratObj, verbose = FALSE)
+print("Running SCT.regMT")
+seuratObj.regMT <- SCTransform(seuratObj, vars.to.regress = "percent.mt", verbose = FALSE)
+```
+
+### Dimensionality reduction
+```{r, dimReduce, warning=FALSE, echo=FALSE}
+myassay = "SCT.all"
+  print(sprintf("Dim reduct on %s", myassay))
+  seuratObj.all <- RunPCA(seuratObj.all, verbose = TRUE) 
+  seuratObj.all <- RunUMAP(seuratObj.all, dims = 1:30, verbose = FALSE)
+  seuratObj.all <- FindNeighbors(seuratObj.all, dims = 1:30, verbose = FALSE)
+  seuratObj.all <- FindClusters(seuratObj.all, verbose = FALSE)
+  DimPlot(seuratObj.all, label = TRUE) + NoLegend()
+  
+myassay = "SCT.regMT"
+  print(sprintf("Dim reduct on %s", myassay))
+  seuratObj.regMT <- RunPCA(seuratObj.regMT, verbose = TRUE) 
+  seuratObj.regMT <- RunUMAP(seuratObj.regMT, dims = 1:30, verbose = FALSE)
+  seuratObj.regMT <- FindNeighbors(seuratObj.regMT, dims = 1:30, verbose = FALSE)
+  seuratObj.regMT <- FindClusters(seuratObj.regMT, verbose = FALSE)
+  DimPlot(seuratObj.regMT, label = TRUE) + NoLegend()
+```
+
+***
+### Plot Key Features for each SCT run
+
+```{r, plotFeatures, echo=FALSE}
+featureList = list(erythroid = c("Hbb-bs", "Hba-a1"),
+                   megakaryocytes = c("Itga2b", "Pbx1"),
+                   basophils = c("Prss34", "Ms4a2", "Fcer1a"),
+                   MEP = c("Pf4", "Mpl"),
+                   myeloid = c("Cd33", "Mmp9"),
+                   mast = c("Alox15", "Gata2"), 
+                   bCells = c("Igha"),
+                   neutrophil = c("Elane", "Ctsg", "Mpo"),
+                   monocyte = c("Irf8", "Ctsg", "Mpo")) 
+for (myfeatures in names(featureList)) {
+  p1 = FeaturePlot(seuratObj.all, features = featureList[[myfeatures]], min.cutoff = "q9")
+  grid.arrange(p1, top = sprintf("%s - %s", "seuratObj.all", myfeatures))
+  
+  p2 = FeaturePlot(seuratObj.regMT, features = featureList[[myfeatures]], min.cutoff = "q9")
+  grid.arrange(p2, top = sprintf("%s - %s", "seuratObj.regMT", myfeatures))
+}
+```
+
+***
+### Tabulate # cells by cluster
+```{r, tabulate, echo=FALSE}
+kable(table(Idents(seuratObj.all), seuratObj.all$MULTI_ID_HTO))
+kable(table(Idents(seuratObj.regMT), seuratObj.regMT$MULTI_ID_HTO))
+```
+
+***
+### Write the updated Seurat object to a file
+
+```{r, saveObject, echo=FALSE}
+if (saveObj) {
+  file2save = params$file2save
+  file2save = ifelse(file2save == "default", run2process, file2save)
+  
+  filename = sprintf("%s_SeuratObj_scTxform_all_%s.Rdata", file2save, Sys.Date())
+  print(sprintf("Saving %s to file %s at %s", run2process, filename, directory$rda))
+  saveRDS(seuratObj.all, sprintf("%s/%s", directory$rda, filename))
+  
+  filename = sprintf("%s_SeuratObj_scTxform_regMT_%s.Rdata", file2save, Sys.Date())
+  print(sprintf("Saving %s to file %s at %s", run2process, filename, directory$rda))
+  saveRDS(seuratObj.regMT, sprintf("%s/%s", directory$rda, filename))
+}
+```
+
+***
+#### Session Information
+```{r, echo=FALSE}
+sessionInfo()
+```
