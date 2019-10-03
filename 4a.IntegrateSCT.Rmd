@@ -1,0 +1,114 @@
+---
+title: "Normalize Seurat Object"
+author: "TLusardi"
+date: "9/27/2019"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+params:
+  SCTregress: "all"
+  file2save: "default"
+  seqLoc: "mpssr"
+  baseTP: "wk04"
+  baseGT: "wt"
+  saveObj: FALSE
+---
+
+1. Read Seurat Objects
+2. Integrate 
+3. Create tables by mouse
+3. Create plots?
+3. Write integrated object
+
+```{r setup_libs, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+#library(sctransform)
+library(data.table)
+library(knitr)
+#library(ggplot2)
+#library(grid)
+#library(gridExtra)
+
+SCTregress = params$SCTregress
+saveObj = params$saveObj
+seqLoc = params$seqLoc
+baseTP = params$baseTP
+baseGT = params$baseGT
+```
+
+## Read Seurat Object - `r run2process`
+
+```{r setup_vars, include=FALSE}
+# Could (should?) probably make these parameters that can be passed in
+directory = list(rda = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/rda")
+```
+Source Data Directory:  `r directory$raw`   
+Processed Data Directory:  `r directory$rda`   
+SCTransform Regression:  `r SCTregress`   
+
+```{r, readObject, echo=FALSE}
+files2choose = list.files(directory$rda)
+files2choose <- files2choose[grepl("scTxform", files2choose) & grepl(SCTregress, files2choose) & grepl(seqLoc, files2choose)]
+wtfiles = files2choose[grepl("wt", files2choose)]
+mutfiles = files2choose[grepl("mut", files2choose)]
+
+# Open WT files and integrate
+seuratObj_ls <- list()
+index = 1
+for (myfile in wtfiles) {
+  myrun = substr(myfile, 1, 13)
+  seuratObj_ls[[myrun]] <- readRDS(paste(directory$rda, myfile, sep = "/"))
+  
+  # Somehow, there are cells with the same ID across runs. Append an index to each of the cell names
+#  Cells(seuratObj_ls[[myrun]]) = paste(Cells(seuratObj_ls[[myrun]]), index, sep = "_")
+  index = index + 1
+  seuratObj_ls[[myrun]]
+}
+```
+
+### Select Integration Features
+
+```{r, featureSel, echo=FALSE}
+seuratFeatures <- SelectIntegrationFeatures(object.list = seuratObj_ls, nfeatures = 3000)
+options(future.globals.maxSize= 6100000000)
+seuratObj_ls <- PrepSCTIntegration(object.list = seuratObj_ls, anchor.features = seuratFeatures, verbose = FALSE)
+referenceRun <- "wk04_mpssr_wt"
+# Specifying a reference run triggers an error...
+seurat.anchors <- FindIntegrationAnchors(object.list = seuratObj_ls, normalization.method = "SCT", 
+    anchor.features = seuratFeatures, verbose = FALSE)
+wt.integrated <- IntegrateData(anchorset = seurat.anchors, normalization.method = "SCT", verbose = FALSE)
+```
+
+### Run PCA/UMAP
+
+```{r, pca_umap, echo=FALSE}
+wt.integrated <- RunPCA(wt.integrated, verbose = FALSE)
+wt.integrated <- RunUMAP(wt.integrated, dims = 1:30)
+```
+
+### UMAP Plots
+
+```{r, umapplots, echo=FALSE}
+DimPlot(wt.integrated, group.by = "tp")
+#kable(table(Idents(wt.integrated, "tp"), wt.integrated$SCT_snn_res.0.8))
+kable(table(wt.integrated$seurat_clusters, wt.integrated$tp, wt.integrated$MULTI_ID_HTO))
+DimPlot(wt.integrated, group.by = "SCT_snn_res.0.8", split.by = "tp")
+```
+
+### Find Neighbors in integrated data, and cluster
+
+```{r, clusterIntegrated, echo=FALSE}
+#ElbowPlot(wt.integrated, ndims = 30)
+wt.integrated <- FindNeighbors(wt.integrated, dims = 30)
+#Idents(wt.integrated) <- 
+resolutions2eval = c(0.1, 0.5, 1.2)
+for (myres in resolutions2eval[1]) {
+  wt.integrated <- FindClusters(wt.integrated, resolution = myres)
+  DimPlot(wt.integrated, group.by = "SCT_snn_res.0.8", reduction = "umap", split.by = "tp")
+}
+```
