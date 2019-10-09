@@ -6,12 +6,11 @@ output:
   html_document:
     df_print: paged
     toc: yes
-  html_notebook:
-    toc: yes
-    toc_float: yes
 params:
   run2process: "wk36_mpssr_wt"
   baseDir: "/home/groups/CEDAR/braun"
+  sourceDir: "cellranger"
+  destDir: "seurat_obj/junk"
   file2save: "default"
   calcADT: TRUE
   local: FALSE
@@ -40,12 +39,13 @@ run2process = params$run2process
 
 ```{r setup_vars, include=FALSE}
 # params$local = TRUE is for debugging locally... Default to FALSE - use directories on Exacloud
+print(sprintf("params$local: ", params$local))
 if (params$local) {
   directory = list(raw = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/raw",
                    rda = "/Users/lusardi/Documents/CEDAR/Projects/3.ASXL_mutant/analysis/data/rda")
 } else {
   directory = list(raw = sprintf("%s/cellranger/%s/outs", params$baseDir, run2process),
-                   rds = sprintf("%s/seurat_obj/basicObj_%s", params$baseDir, Sys.Date()))
+                   rda = sprintf("%s/seurat_obj/basicObj_%s", params$baseDir, Sys.Date()))
 }
 
 # If raw exists, continue, otherwise, exit.
@@ -55,10 +55,10 @@ if (!dir.exists(directory$raw)) {
 }
 
 # If rda does not exist, create it
-if (!dir.exists(directory$rds)) {
-  dir.create(directory$rds)
-  if (!dir.exists(directory$rds)) {
-    message(sprintf("ERROR: could not create directory %s", directory$rds))
+if (!dir.exists(directory$rda)) {
+  dir.create(directory$rda)
+  if (!dir.exists(directory$rda)) {
+    message(sprintf("ERROR: could not create directory %s", directory$rda))
     knitr::knit_exit()
   }
 }
@@ -68,7 +68,10 @@ Processed Data Directory:  `r directory$rda`
 Processed Run:  `r run2process`   
 
 ```{r, load_10X, echo=FALSE}
-input.data = Read10X(data.dir = sprintf("%s/%s/filtered_feature_bc_matrix", directory$raw, run2process))
+file2read = sprintf("%s/filtered_feature_bc_matrix", directory$raw, run2process)
+print(sprintf("Reading files from: %s", file2read))
+input.data = Read10X(data.dir = file2read)
+#input.data = Read10X(data.dir = sprintf("%s/%s/filtered_feature_bc_matrix", directory$raw, run2process))
 
 # Get timepoint (tp), sequencing (seq), and genotype (gt) from the run name
 mypheno = unlist(strsplit(run2process, split = "_", fixed = TRUE))
@@ -348,13 +351,15 @@ DimPlot(subset_seuratObj)
 ### Write the Seurat object to a file
 
 ```{r, saveObject, echo=FALSE}
-file2save = params$file2save
-file2save = ifelse(file2save == "default", run2process, file2save)
-filename = sprintf("%s_1.SeuratObj_%s.rds", file2save, Sys.Date())
 
+if (params$file2save == "default") {
+  file2save = run2process
+} else {
+  file2save = params$file2save
+}
+filename = sprintf("%s/%s_1.SeuratObj_%s.rds", directory$rda, file2save, Sys.Date())
 print(sprintf("Saving %s to file %s at %s", run2process, filename, directory$rda))
-
-saveRDS(seuratObj, sprintf("%s/%s", directory$rda, filename))
+saveRDS(object = seuratObj, file = filename)
 ```
 
 ***
