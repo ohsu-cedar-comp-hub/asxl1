@@ -11,8 +11,11 @@ output:
     toc_float: yes
 params:
   run2process: "wk36_mpssr_wt"
+  sourceDir: "home/groups/CEDAR/braun/seurat_obj"
+  destDir: "/home/groups/CEDAR/braun/seurta_obj"
   file2save: "default"
-  saveObj: FALSE
+  local: FALSE
+  saveObj: TRUE
 ---
 
 1. Read Seurat Object
