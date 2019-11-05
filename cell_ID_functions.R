@@ -182,33 +182,26 @@ add_cell_haem_data <- function (seuratObj, markers = NULL, assay = NULL, genes_d
   }
   seurat.markers <- markers
   current_res <- res
-  nameIt <- "new_cell_type"
+  nameIt <- NULL
   if (!(is.null(sub_name))){
-    nameIt <- paste(sub_name,nameIt,sep = "_")
+    nameIt <- sub_name
   }
-  
-  if (is.character(current_res)){
+  else if (is.character(current_res)){
     nameIt <- gsub(current_res,sprintf("cell_type_%s_%s",assay,substrRight(current_res,4)),current_res)
-    if (!(is.null(sub_name))){
-      nameIt <- paste(sub_name,nameIt,sep = "_")
-    }
   }
-  else if(is.numeric(current_res)){
-    current_res <- grep(sprintf("^%s_snn_res.%s$",assay,current_res),colnames(seuratObj@meta.data), value = T)
-    
-    nameIt <- sprintf("cell_type_%s_%s",assay,current_res)
-    if (!(is.null(sub_name))){
-      nameIt <- paste(sub_name,nameIt,sep = "_")
+  if(is.numeric(current_res)){
+    current_res <- grep(myres,grep(sprintf("^integrated|RNA|SCT_snn_res"),colnames(seuratObj@meta.data), value = T), value = T)
+    if (length(current_res) == 0){stop("Numerical 'res' is ambiguous.  Please use column name to define 'res' parameter")}
+    if (is.null(nameIt)){
+      nameIt <- paste("celltype",current_res,sep = "_")
     }
   }
   else if(is.null(res)){
     current_res <- "seurat_clusters"
-    nameIt <- sprintf("cell_type_%s_%s",assay,current_res)
-    if (!(is.null(sub_name))){
-      nameIt <- paste(sub_name,nameIt,sep = "_")
-    }
     if (!(current_res %in% colnames(seuratObj@meta.data))) {stop("Seurat object needs to have clusters, as in snn or otherwise.  update 'res' variable")}
-    
+    if (is.null(nameIt)){
+      nameIt <- paste("celltype",current_res,sep = "_")
+    }
   }
   seuratObj <- SetIdent(object = seuratObj, value = current_res)
   
