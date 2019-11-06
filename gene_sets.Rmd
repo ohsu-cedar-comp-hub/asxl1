@@ -1,0 +1,170 @@
+---
+title: "Gene Sets"
+author: "Trevor Enright"
+date: "10/28/2019"
+output: html_document
+params:
+  output: "~"
+  input: "~/Braun_mouse_ASXL1/MouseRNA_Haemo_Atlas"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo = FALSE}
+library(Seurat)
+library(cowplot)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(data.table)
+output <- params$output
+input <- params$input
+```
+
+This R markdown details the way to process Haemopedia raw counts into a normalized and scaled dataframe to be used for comparing single cell normalized and scaled counts.
+
+# Get haemosphere data
+
+Haemosphere data came be found at https://www.haemosphere.org/datasets/show.  The data will be in the form of counts per million with ensembl gene ID as the rows and cell monikers as the columns. Then use biomart to gather common gene names compatible with 10X or other pipelines.
+
+```{r echo = F}
+Haemopedia <- read.delim(sprintf("%s/Haemopedia-Mouse-RNASeq_raw.txt",input))
+
+#downloaded from https://www.haemosphere.org/datasets/show  Haemopedia-Mouse-RNASeq version 1.5
+# "raw counts summarized as genes"
+# Load common names to use instead of Ensembl gene ID
+library(biomaRt)
+ensembl <- useMart("ensembl", dataset="mmusculus_gene_ensembl")
+filters = listFilters(ensembl)
+gene_transfer <- getBM(attributes = c("ensembl_gene_id", "external_gene_name"), 
+       filters =  "ensembl_gene_id", 
+       values = Haemopedia$geneId, 
+       mart = ensembl)
+
+
+#incorporate common names into the Haemopedia dataset
+Haemopedia <- merge(gene_transfer,Haemopedia,by.x = "ensembl_gene_id", by.y = "geneId", all.y = T)
+
+```
+
+## Keep relevant cell types
+
+Subsetting the cells of interest is recommended.  This code block subsets the data by cell type.
+
+```{r}
+
+metadata_bare_minimum <- read.delim(sprintf("%s/metadata_tab_bare_min.txt",input))
+
+metadata_minimum <- read.delim(sprintf("%s/metadata_ted_min.txt",input))
+metadata_tab <- as.data.table(metadata)
+metadata_min_tab <- as.data.table(metadata_minimum)
+BM_Haem_bm <- Haemopedia[,(colnames(Haemopedia) %in% c(as.character(metadata_bare_tab$sampleID), "ensembl_gene_id", "external_gene_name"))]
+
+#minimum
+BM_Haem_min <- Haemopedia[,(colnames(Haemopedia) %in% c(as.character(metadata_min_tab$sampleID), "ensembl_gene_id", "external_gene_name"))]
+```
+
+## Functions for processing data
+
+```{r echo = F}
+
+get_Haem_data <- function(Continue_with, assay = "RNA", return_mean = T){
+  #processes transcipts per million data into seurat object to normalize and scale
+  # returns a matrix with normalized and scaled count data 
+  # return_mean (boolean) returns the averages of duplicated cell types
+  # assay is prefered assay from the seurat object to create the matrix ("RNA"-default, or "SCT")
+  # scale is hardcoded to maxsize of 3
+  Haem_it_up <- Continue_with[,-(1:2)]
+  
+  #get column names which are for a cell_id
+  col_names_type <- gsub("\\..*","",colnames(Haem_it_up))
+  
+  
+  for (i in unique(col_names_type)){
+    mean_calc <- NULL
+    columns_to_compute <- Haem_it_up[,which(col_names_type == i)]
+    if (is.data.frame(columns_to_compute)) {
+      mean_calc <- rowMeans(columns_to_compute)
+      Haem_it_up[[i]] <- as.integer(mean_calc)
+    }
+  }
+  
+  
+  #get matrix of Haemopedia
+  Haem_mat <- as.matrix(Haem_it_up)
+
+  rownames(Haem_mat) <- Continue_with$ensembl_gene_id
+  
+  Haem_BM <- CreateSeuratObject(Haem_mat,project = "BM_Haem")
+  Haem_BM[["percent.mt"]] <- PercentageFeatureSet(Haem_BM, pattern = "^mt-")
+  Haem_BM <- SCTransform(Haem_BM, vars.to.regress = "percent.mt", return.only.var.genes = FALSE)
+  Haem_BM <- NormalizeData(object = Haem_BM, assay = "RNA")
+  Haem_BM <- ScaleData(object = Haem_BM, assay = "RNA", features = rownames(Haem_BM),scale.max = 3)
+  Haem_data <- Haem_BM@assays[[assay]]@scale.data
+
+  # merge by ensembl gene ID to get common names
+  Haem_data <- merge(gene_transfer,Haem_data,by.x = "ensembl_gene_id", by.y = 0, all.y = T)
+  
+  #save common name
+  Haem_names <- Haem_data$external_gene_name
+  #obtain only scaled data
+  Haem_data <- Haem_data[,-(1:2)]
+  #Create row names
+  rownames(Haem_data) <- make.names(Haem_names,unique = T)
+  # adds to the end of the matrix
+  Haem_data$external_gene_name <- Haem_names
+  
+  
+  if (return_mean){ #return just the mean of the cell types from the haemosphere
+    Haem_data <- Haem_data[,which(!grepl("\\.",colnames(Haem_data)) | colnames(Haem_data) == "external_gene_name")]
+  } else {
+  #Haem_data only consists of data from Haemopedia not added data
+  Haem_data <- Haem_data[,which(grepl("\\.",colnames(Haem_data)) | colnames(Haem_data) == "external_gene_name")]
+  }
+  return(Haem_data)
+}
+
+get_gene_set <- function(norm_scaled_data){
+  #get a list of genes only highly expressed in each cell type
+  # ensure that the normalized and scaled expression is above 2 
+  gene_set <- list()
+  for (i in colnames(norm_scaled_data)){
+   gene_set[[i]]  <- rownames(norm_scaled_data)[which(norm_scaled_data[order(norm_scaled_data[,i], decreasing = T),i] > 2 & rowSums(norm_scaled_data[order(norm_scaled_data[,i], decreasing = T),] > 0) == 1)]
+  }
+  return(gene_set)
+}
+```
+
+# Process the data
+
+```{r echo = F}
+#Decide which relevant cell matrix you are going to process
+Continue_with <- Haemopedia
+
+#normalize and scale the relevant cell matrix
+results <- get_Haem_data(Continue_with = Continue_with, return_mean = T)
+#remove the gene names column (gene names are still in rownames)
+results <- results[,1:ncol(results)-1]
+
+
+gene_set <- get_gene_set(results)
+```
+
+
+## Write the outputs
+
+
+```{r write,echo=FALSE, eval = FALSE}
+
+
+
+saveRDS(gene_set,sprintf("%s/gene_set_per_cell_mousehaem.RDS",output)
+
+write.csv(results,file = sprintf("%s/Haem_FULL_RNA_mean.csv",output)
+
+saveRDS(results,file = sprintf("%s/Haem_FULL_RNA.RDS",output))
+
+```
+
